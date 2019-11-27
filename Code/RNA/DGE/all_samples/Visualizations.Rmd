@@ -1,0 +1,136 @@
+---
+title: "Colibactin clones RNA-Seq analysis, all samples - Visualizations"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, warning=FALSE, message=FALSE}
+rm(list=ls())
+
+suppressMessages(library(xlsx))
+library(reshape2)
+library(pheatmap)
+library(ggplot2)
+library(knitr)
+library(scales)
+library(fgsea)
+library(data.table)
+library(DESeq2)
+
+result_folder = "../../../../Results/RNASeq"
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+b1 = new.env()
+b2 = new.env()
+
+load(file.path(result_folder, "DGE_analysis_image_batch1.Rdata"), envir = b1)
+norm_counts_b1 = read.table(file.path(result_folder, "Normalized_expression_data_batch1.txt"), sep="\t", header=T, stringsAsFactors = F)
+
+load(file.path(result_folder, "DGE_analysis_image_batch2.Rdata"), envir = b2)
+norm_counts_b2 = read.table(file.path(result_folder, "Normalized_expression_data_batch2.txt"), sep="\t", header=T, stringsAsFactors = F)
+
+ed1 = get("ed", b1)
+ed1$MouseID = "M1"
+ed2 = get("ed", b2)
+ed = rbind(ed1[, c("sampleID", "MouseID", "Condition")], ed2[, c("sampleID", "MouseID", "Condition")] )
+
+ed$ShortName = paste(ed$Condition, ed$MouseID, sep="_")
+
+
+b1_raw = new.env()
+load("../../../../Data/Processed/RNA_counts/Salmon_gene_expression_batch1.Rdata", b1_raw)
+b1_se = get("salmon_gene_expression_data", b1_raw)
+gene_anno = get("gene_anno", b1_raw)
+
+all_results = c(get("all_results", b1), get("all_results", b2))
+```
+
+<!-- ```{r} -->
+<!-- dge_genes = c() -->
+<!-- sel_comparisons = names(all_results) -->
+<!-- for (cc in sel_comparisons) { -->
+<!--   tmp = subset(all_results[[cc]], padj < 0.05 & abs(log2FoldChange) > 1 )$GeneSymbol -->
+<!--   dge_genes = c(dge_genes, tmp) -->
+<!-- } -->
+
+<!-- dge_genes = unique(dge_genes) -->
+<!-- ``` -->
+
+# Selected genes
+
+## Selected Wnt targets 
+
+
+```{r}
+dge_genes_str = "Notch2
+Notch1
+Jag2
+Jag1
+Tcf7
+Lef1
+Fzd10
+Fzd7
+Enc1
+S100a9
+Myc
+Apc
+Axin2
+Mmp7
+Cd44
+Ascl2
+Sox9
+Lgr5"
+
+dge_genes = unique(read.table(text=dge_genes_str, header = F, stringsAsFactors = F)$V1)
+```
+
+
+
+### Fold changes compared to corresponding controls
+
+```{r, fig.height=8}
+sel_comparisons = c("WI_Clone1_vs_uninfected"="M1 Clone 1", "WI_Clone2_vs_uninfected"="M1 Clone 2", "WI_Clone3_vs_uninfected"="M1 Clone 3", "WI_Pool_vs_uninfected"="M1 Pool", "M2_WI_vs_uninfected" = "M2 Pool", "M3_WI_vs_uninfected"="M3 Pool")
+
+dge_tab = gene_anno
+for (s in names(sel_comparisons)) {
+  sn = sel_comparisons[s]
+  tmp = all_results[[s]][, c("Row.names","log2FoldChange", "padj")]
+  colnames(tmp) = c("ID", paste0("log2FC", "_",sn), paste0("padj","_",sn))
+  tmp$ID = as.character(tmp$ID)
+  dge_tab = merge(dge_tab, tmp, by.x="gene", by.y="ID", all.x=T, sort=F)
+}
+
+sel_dge = subset(dge_tab, GeneSymbol %in% dge_genes)
+
+log2FC_mat = as.matrix(sel_dge[,grepl("log2FC_",colnames(sel_dge))])
+rownames(log2FC_mat) = gene_anno[sel_dge$gene, "GeneSymbol"]
+log2FC_mat = log2FC_mat[dge_genes, ]
+
+breaks_new = c(-10,-5,seq(-1,1,2/96),5, 10)
+pheatmap(log2FC_mat, scale="none", main="Wnt associated genes - Log2 fold change (vs NI) for each mouse", cluster_cols = FALSE, cluster_rows = F, fontsize_row = 18, fontsize_col = 22, breaks=breaks_new, labels_col = gsub("log2FC_","", colnames(log2FC_mat)))
+
+
+```
+
+```{r}
+outfile = paste(result_folder, "Heatmap_FC_vs_NI_all.pdf", sep="/")
+cairo_pdf(outfile, pointsize=4, width=8.26, heigh=11.68 )
+
+breaks_new = c(-10,-5,seq(-1,1,2/96),5, 10)
+pheatmap(log2FC_mat, scale="none", main="Wnt associated genes - Log2 fold change (vs NI) for each mouse", cluster_cols = FALSE, cluster_rows = F, fontsize_row = 18, fontsize_col = 22, breaks=breaks_new, labels_col = gsub("log2FC_","", colnames(log2FC_mat)))
+
+dev.off()
+```

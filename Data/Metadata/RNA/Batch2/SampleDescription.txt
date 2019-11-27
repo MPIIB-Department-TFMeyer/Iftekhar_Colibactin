@@ -1,0 +1,5 @@
+sampleID	SampleName	MouseID	Condition
+3985_A	Uninf 2	M2	NI
+3985_B	WI2	M2	WI
+3985_C	Uninf3	M3	NI
+3985_D	WI3	M3	WI

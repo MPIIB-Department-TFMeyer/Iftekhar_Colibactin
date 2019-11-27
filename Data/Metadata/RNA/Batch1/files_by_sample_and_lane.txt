@@ -1,0 +1,6 @@
+2534_A_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_A_run397_TTCTCCGA_S46_L003_R1_001_f.fastq.gz	
+2534_B_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_B_run397_TACGCAGG_S47_L003_R1_001_f.fastq.gz	
+2534_C_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_C_run397_GCGTACGT_S48_L003_R1_001_f.fastq.gz	
+2534_D_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_D_run397_CTTATGGA_S49_L003_R1_001_f.fastq.gz	
+2534_E_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_E_run397_CTACGCTT_S50_L003_R1_001_f.fastq.gz	
+2534_F_L003	/data/projects/MB208_Colibactin/seqs/RNA/FASTQ/2534_F_run397_CCGTTCAT_S51_L003_R1_001_f.fastq.gz	

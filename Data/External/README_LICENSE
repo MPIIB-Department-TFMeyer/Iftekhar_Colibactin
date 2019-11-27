@@ -1,0 +1,15 @@
+All files in this folder are derived from external sources and therefore not covered by the license provided for the rest of the repository.
+
+Details:
+
+homologene_9606_10090.txt
+Source:
+ftp://ftp.ncbi.nih.gov/pub/HomoloGene
+License: see https://www.ncbi.nlm.nih.gov/home/about/policies/
+
+GeneSets:
+Gene lists were extracted from published articles. See ../Code/MicroarrayAnalysis/Antrum/GSEA_Analysis.Rmd and ../Code/MicroarrayAnalysis/Corpus/GSEA_Analysis.Rmd for references.
+
+MSigDB: Data has to be downloaded by the user. See http://www.gsea-msigdb.org/gsea/license_terms_list.jsp for license details
+
+

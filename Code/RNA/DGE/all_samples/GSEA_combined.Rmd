@@ -1,0 +1,164 @@
+---
+title: "GSEA combined"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, warning=FALSE, message=FALSE}
+rm(list=ls())
+source("./fGSEA_plot_functions.R")
+
+suppressMessages(library(xlsx))
+library(reshape2)
+library(pheatmap)
+library(ggplot2)
+library(knitr)
+library(scales)
+library(fgsea)
+library(data.table)
+
+result_folder = "../../../../Results/RNASeq"
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+```
+
+```{r}
+load(file.path(result_folder, "fGSEA_Results.Rdata"))
+load(file.path(result_folder, "Geneset_collections.Rdata"))
+
+b1 = new.env()
+b2 = new.env()
+
+load(file.path(result_folder, "DGE_analysis_image_batch1.Rdata"), envir=b1)
+load(file.path(result_folder, "DGE_analysis_image_batch2.Rdata"), envir=b2)
+
+all_dge_results = c(get("all_results", b1), get("all_results",b2))
+
+tmp = merge(all_dge_results[["WI_Pool_vs_uninfected"]], all_dge_results[["M2_WI_vs_uninfected"]], by="Row.names")
+tmp = merge(tmp, all_dge_results[["M3_WI_vs_uninfected"]], by="Row.names")
+tmp$log2FoldChange_avg = apply(tmp[, c("log2FoldChange", "log2FoldChange.x", "log2FoldChange.y")], 1, mean, na.rm=T)
+
+all_dge_results[["log2FC_avg_WI_vs_NI"]] = tmp
+
+
+gset_collections_human = get("gset_collections_human", b1)
+gset_collections_mouse = get("gset_collections_mouse", b1)
+```
+
+```{r}
+homologene_human_mouse = fread("../../../../Data/External/homologene_9606_10090.txt")
+all_entrez_ids = data.frame(EntrezID=unique(all_dge_results[[1]]$EntrezID))
+all_symbols = data.frame(GeneSymbol=unique(all_dge_results[[1]]$GeneSymbol))
+a1 = merge(all_symbols, homologene_human_mouse[,c("entrez_1","symbol_1","symbol_2"), with=F], by.x="GeneSymbol", by.y="symbol_2", all.x=T, sort=F)
+
+mouse_to_human=a1
+rownames(mouse_to_human) = mouse_to_human$GeneSymbol
+
+```
+
+
+```{r}
+sel_comparisons = c( "M1_WI_vs_uninfected"="M1 Pool", "M2_WI_vs_uninfected" = "M2 Pool", "M3_WI_vs_uninfected"="M3 Pool")
+
+pool_comparisons = c("M1_WI_vs_uninfected"="M1 Pool", "M2_WI_vs_uninfected" = "M2 Pool", "M3_WI_vs_uninfected"="M3 Pool")
+
+```
+
+```{r}
+#sel_gsea_results = do.call(rbind, all_gsea_results[names(sel_comparisons)])
+sel_gsea_results = rbindlist(all_gsea_results[names(sel_comparisons)])
+ll = lapply(all_gsea_results[names(sel_comparisons)], nrow)
+sel_gsea_results$comparison = rep(names(ll), times = unlist(ll))
+
+sgr_sw = dcast(sel_gsea_results, pathway + GeneSetCollection ~ comparison, value.var="NES")
+sgr_sw$mean_NES = apply(sgr_sw[, 3:length(ll)], 1, mean, na.rm=T)
+sgr_sw$median_NES = apply(sgr_sw[, 3:length(ll)], 1, median, na.rm=T)
+
+sgr_sw_filtered = subset(sgr_sw, GeneSetCollection != "IMMUNOLOGIC")
+
+#write.table(sgr_sw, file=file.path(result_folder,"gsea_result_overview_table_NES.txt"), sep="\t", row.names=F, quote=F)
+
+# tmp = sel_gsea_results
+# tmp2 = unlist(lapply(tmp$leadingEdge, paste, collapse=","))
+# tmp$leadingEdge = tmp2
+#write.table(tmp, file=file.path(result_folder,"gsea_result_overview_complete.txt"), sep="\t", row.names=F, quote=F)
+```
+
+```{r}
+sgr_sw_sig = dcast(subset(sel_gsea_results, FDR_global<0.2), pathway + GeneSetCollection ~ comparison, value.var="NES")
+sgr_sw_sig$mean_NES = apply(sgr_sw_sig[, 3:length(sel_comparisons)], 1, mean, na.rm=T)
+sgr_sw_sig$median_NES = apply(sgr_sw_sig[, 3:length(sel_comparisons)], 1, median, na.rm=T)
+
+sgr_sw_sig_filtered = subset(sgr_sw_sig, GeneSetCollection != "IMMUNOLOGIC")
+```
+
+```{r}
+sel_genesets = c("HALLMARK_G2M_CHECKPOINT","HALLMARK_E2F_TARGETS","HALLMARK_MITOTIC_SPINDLE","HALLMARK_PEROXISOME","HALLMARK_FATTY_ACID_METABOLISM","HALLMARK_OXIDATIVE_PHOSPHORYLATION")
+
+xx = subset(sgr_sw_filtered, grepl("HALLMARK",GeneSetCollection))
+xx1 = as.matrix(xx[, names(pool_comparisons), with=F])
+rownames(xx1) = xx$pathway
+xx1_o = xx1[order(-xx$mean_NES),]
+
+tmp = xx1_o[sel_genesets, names(pool_comparisons)]
+#tmp = tmp[apply(!is.na(tmp), 1,sum)>2,]
+pheatmap(tmp, main="NES of HALLMARK gene sets from MSigDB - only significant", cluster_rows = F, cluster_cols=F)
+```
+
+
+```{r}
+pdf(file=file.path(result_folder, "HALLMARK_Heatmap.pdf"), width=8, height=6)
+pheatmap(tmp, main="NES of HALLMARK gene sets from MSigDB - only significant", cluster_rows = F, cluster_cols=F)
+dev.off()
+```
+
+## Average log2FC across 3 replicate mice
+
+```{r}
+selected_genesets = c("Lgr5_SC_Signature_Munoz", "CTNNB1stab_up_Riemer", "CTNNB1stab_down_Riemer")
+                    
+for (sel_comparison in c("log2FC_avg_WI_vs_NI")) {
+
+  tmp = all_dge_results[[sel_comparison]]
+  # tmp2 = merge(tmp, mouse_to_human, by="GeneSymbol")
+  # tmp2 = subset(tmp2, !is.na(symbol_1))
+  ranks_mouse = unlist(tapply(tmp$log2FoldChange, tmp$GeneSymbol, function(x) x[which(abs(x)==max(abs(x)))] ))
+  tmp =  # those are mostly control probes
+  
+  tmp2 = merge(subset(tmp, !is.na(GeneSymbol)), mouse_to_human, by="GeneSymbol")
+  tmp2 = subset(tmp2, !is.na(symbol_1))
+  ranks_human = unlist(tapply(tmp2$log2FoldChange, tmp2$symbol_1, function(x) x[which(abs(x)==max(abs(x)))] ))
+
+  for (g in selected_genesets) {
+    rr = subset(all_gsea_results[[sel_comparison]], pathway==g)
+    loc = unlist(lapply(gset_collections_human, function(x) grep(g, names(x))))
+    if(length(loc)>0) {
+      sel_genes = unlist(gset_collections_human[[names(loc)]][loc])
+      ranks = ranks_human
+    } else {
+      loc = unlist(lapply(gset_collections_mouse, function(x) grep(g, names(x))))
+      sel_genes = unlist(gset_collections_mouse[[names(loc)]][loc])
+      ranks = ranks_mouse
+    }
+    
+  p = myPlotEnrichment(sel_genes, ranks )
+  print(p + ggtitle(paste(sel_comparison,"-", g), paste("FDR=",prettyNum(rr$FDR_global, digits=2),", p=",prettyNum(rr$pval, digits=2), ", ES=",prettyNum(rr$ES, digits=2), ", NES=",prettyNum(rr$NES, digits=2) ) ) )
+
+  pdf(file=file.path(result_folder, paste0(sel_comparison,"_",g,".pdf")), width=8, height=6)
+  print(p + ggtitle(paste(sel_comparison,"-", g), paste("FDR=",prettyNum(rr$FDR_global, digits=2),", p=",prettyNum(rr$pval, digits=2), ", ES=",prettyNum(rr$ES, digits=2), ", NES=",prettyNum(rr$NES, digits=2) ) ) )
+  dev.off()
+  }  
+}
+
+```
+

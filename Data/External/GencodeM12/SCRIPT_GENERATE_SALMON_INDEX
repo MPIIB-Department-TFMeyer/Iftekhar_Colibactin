@@ -1,0 +1,1 @@
+/data_genome1/SharedSoftware/Salmon/bin/salmon index -t gencode.vM12.transcripts.fa.gz -i GencodeM12 --gencode
