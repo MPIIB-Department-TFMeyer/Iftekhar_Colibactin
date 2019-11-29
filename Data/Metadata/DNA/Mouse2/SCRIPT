@@ -1,0 +1,5 @@
+FILE_LIST=all_files_2018-11
+for i in ../../../Raw/seqs/DNA/2702_*fastq.gz; do echo $(readlink -f $i) >> $FILE_LIST; done
+cat $FILE_LIST | python ./extract_per_sample_files.py > all_samples_aggregated_paired.txt
+cat $FILE_LIST | python ./extract_per_lane_files.py > files_by_sample_and_lane.txt
+
