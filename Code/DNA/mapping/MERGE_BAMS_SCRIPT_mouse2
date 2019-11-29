@@ -1,0 +1,1 @@
+pushd ../../../Data/Processed/BAM_merged; for i in A B C D; do samtools merge -@ 4 -r 2702_${i}_merged_sorted.bam ../BAM_per_lane/2702_${i}*.bam; samtools index 2702_${i}_merged_sorted.bam; done; popd

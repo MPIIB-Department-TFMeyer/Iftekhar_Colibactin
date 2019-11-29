@@ -1,0 +1,2 @@
+# This is to get a VCF file with chromosomes order in the the way as the GRCm38 genome sequences FASTA
+java -jar /data_genome1/SharedSoftware/Picard/picard-2.7.1/picard.jar SortVcf I=mgp.v3.indels.rsIDdbSNPv137.vcf O=mgp.v3.indels.rsIDdbSNPv137_chromorder_1_10.vcf

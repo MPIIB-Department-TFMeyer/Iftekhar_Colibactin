@@ -1,0 +1,1 @@
+tail -n +3 S0276129_Covered.bed | sed -e 's/^chr//' | perl -ne '$line=$_; $line =~ s/\R//g; print $line, "\t.\t.\n"' > S0276129_Covered_fixed_chroms.bed

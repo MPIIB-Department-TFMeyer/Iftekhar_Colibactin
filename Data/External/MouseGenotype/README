@@ -1,0 +1,8 @@
+Download all files from ftp://ftp.ncbi.nih.gov/snp/organisms/archive/mouse_10090/VCF/genotype/
+Run generate_genotype_vcf.sh
+
+Download all indel files from ftp://ftp-mouse.sanger.ac.uk/REL-1303-SNPs_Indels-GRCm38/
+Run SCRIPT_CHROMORDER
+
+Files in this folder are used by GATK for BAM file preprocessing before variant calling. 
+

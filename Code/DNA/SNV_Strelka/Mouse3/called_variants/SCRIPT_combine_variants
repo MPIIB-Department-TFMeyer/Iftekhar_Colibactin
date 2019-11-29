@@ -1,0 +1,24 @@
+# compress and add Tabix indices
+for sample in 3466_B 3466_C 3466_D 3466_E 3466_F 3466_G 3466_H; do
+   SNP_FILE=../strelkaAnalysis_${sample}/results/passed.somatic.snvs.vcf
+   INDEL_FILE=../strelkaAnalysis_${sample}/results/passed.somatic.indels.vcf
+
+   cat $SNP_FILE | sed -e 's/INFO\tFORMAT\tNORMAL\tTUMOR/INFO\tFORMAT\t3466_A\t'"$sample"'/' | bgzip -c > passed_somatic.snvs_${sample}.vcf.gz
+   cat $INDEL_FILE | sed -e 's/INFO\tFORMAT\tNORMAL\tTUMOR/INFO\tFORMAT\t3466_A\t'"$sample"'/' | bgzip -c > passed_somatic.indels_${sample}.vcf.gz
+   tabix -p vcf passed_somatic.snvs_${sample}.vcf.gz
+   tabix -p vcf passed_somatic.indels_${sample}.vcf.gz
+
+   bcftools concat -a passed_somatic.snvs_${sample}.vcf.gz passed_somatic.indels_${sample}.vcf.gz | vcf-sort | bgzip -c > passed_variants_${sample}.vcf.gz
+   tabix -p vcf passed_variants_${sample}.vcf.gz
+done
+
+# merge samples in one VCF file
+bcftools merge --force-samples -m none passed_variants*.vcf.gz > Colibactin_Strelka_calls_merged.vcf
+
+rm passed_somatic.{snvs,indels}_*.vcf*
+
+cat Colibactin_Strelka_calls_merged.vcf | vcf-sort | bgzip -c > Colibactin_Strelka_calls_merged.vcf.gz
+tabix -p vcf Colibactin_Strelka_calls_merged.vcf.gz
+
+
+

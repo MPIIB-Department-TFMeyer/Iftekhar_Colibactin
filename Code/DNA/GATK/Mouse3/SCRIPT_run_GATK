@@ -1,0 +1,12 @@
+DATA_FOLDER=../../../../Data/Processed/BAM_per_lane/
+REGIONS=../../../../Data/External/AgilentSureSelect/MouseExome_mm10_liftover_Covered_fixed_chroms.bed
+
+SAMPLES=$(cut -f 1 ../../../../Data/Metadata/DNA/Mouse3/all_samples_aggregated_paired.txt)
+
+function run_gatk_pipeline { s=$1; bash ../DNASeq_calling_pipeline_single_sample_with_ROI_mouse.sh $DATA_FOLDER $s $REGIONS &> ${s}.log; }
+export -f run_gatk_pipeline
+export DATA_FOLDER
+export REGIONS
+
+echo $SAMPLES | sed -e 's/ /\n/g' | parallel -t -j 4 run_gatk_pipeline
+

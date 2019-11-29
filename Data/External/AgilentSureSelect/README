@@ -1,0 +1,4 @@
+Register and download target file for Agilent SureSelect Mouse all exon kit from https://earray.chem.agilent.com/suredesign/index.htm
+
+Unextract, fix BED file and use UCSC liftover (http://genome-euro.ucsc.edu/cgi-bin/hgLiftOver) to lift targets from original mm9 to mm10
+

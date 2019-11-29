@@ -1,0 +1,467 @@
+---
+title: "Mutated Genes - Comprehensive Analysis"
+author: "Hilmar Berger"
+output:
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+rm(list=ls())
+library(data.table)
+library(ggplot2)
+library(pheatmap)
+library(GenomicFeatures)
+library(xlsx)
+library(org.Mm.eg.db)
+library(knitr)
+
+result_folder = "../../../Results/DNASeq"
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+```
+
+# Data 
+
+We here will try to combined the following types of data from both mice analysed in the experiment:
+
+- SNV/InDel calls from Strelka
+- CNV gain/loss calls from CONTRA
+- RNA Expression levels in uninfected controls from mouse 1 (not analysed with Exome sequencing)
+
+```{r}
+#SNV/Indels
+strelka_single_env = new.env()
+load("../SNV_Strelka/Colibactin_Exome_Strelka_Calls_both_mice.Rdata", envir=strelka_single_env)
+strelka_single_variants = strelka_single_env[["all_variants"]]
+strelka_single_variants_anno = strelka_single_env[["anno_unique_sites_highest_impact"]]
+strelka_single_variants_anno[, varID := paste(CHROM,":",POS,"_",REF,"/",ALT,sep="")]
+
+# # Variants called after aggregating samples
+# strelka_aggregated_env = new.env()
+# load("../Strelka_aggregated/Colibactin_Exome_Strelka_Calls_both_mice.Rdata", envir=strelka_aggregated_env)
+# strelka_aggregated_variants = strelka_aggregated_env[["all_variants"]]
+# strelka_aggregated_variants_anno = strelka_aggregated_env[["anno_unique_sites_highest_impact"]]
+# strelka_aggregated_variants_anno[, varID := paste(CHROM,":",POS,"_",REF,"/",ALT,sep="")]
+# 
+#strelka_anno_combined = rbind(strelka_single_variants_anno, strelka_aggregated_variants_anno)
+strelka_anno_combined = strelka_single_variants_anno
+strelka_anno_combined = strelka_anno_combined[!duplicated(varID)]
+
+cnv_env = new.env()
+load(file.path(result_folder, "CN_calls.Rdata"), envir=cnv_env)
+
+cnv_dt = cnv_env[["all_long_CN_calls_dt"]]
+gcounts = elementNROWS(cnv_dt$EnsemblGene)
+cnv_anno_ensg = with(cnv_dt, data.table(sampleID=rep(sample, gcounts), varID=rep(varID, gcounts), chrom=rep(chrom, gcounts), start=rep(loc.start, gcounts), end=rep(loc.end, gcounts), seg.mean=rep(seg.mean, gcounts), call=rep(call, gcounts), ensgene = unlist(EnsemblGene)   ) )
+
+ge_env = new.env()
+load("../../../Data/Processed/RNA_counts/Salmon_gene_expression_estimates_controls.Rdata", envir=ge_env)
+
+ed = read.xlsx("../../../Data/Metadata/DNA/SampleDescription.xls", sheetIndex = 1, stringsAsFactors=F)
+rownames(ed) = ed$SampleID
+```
+
+```{r}
+ge_levels = ge_env[["gene_expression_estimates_controls"]]
+rownames(ge_levels) = ge_levels$ENSG
+expressed_genes = ge_levels[(ge_levels$TPM_E>0.1 | ge_levels$TMP_F > 0.1), "ENSG"]
+ge_levels$gene_means = apply(ge_levels[,c("TPM_E","TMP_F")], 1, mean, na.rm=T)
+
+gene_means_expressed = ge_levels[expressed_genes, ]$gene_means
+qq = quantile(gene_means_expressed, p=c(0,0.25,0.5,0.75, 1))
+ge_levels$ge_quartile="Not expressed"
+ge_levels[expressed_genes,]$ge_quartile = cut(ge_levels[expressed_genes,]$gene_means, breaks = qq, labels = c("Q4", "Q3", "Q2", "Q1"))
+
+ge_levels$ge_rank = nrow(ge_levels) - rank(ge_levels$gene_means) + 1
+```
+
+```{r}
+M17db = loadDb("../../../Data/External/GencodeM17/GENCODE_basic_M17_TxDB.db")
+tx_anno = fread("../../../Data/External/GencodeM17/gencode.vM17.transcript.anno.txt", sep="\t", header=T, stringsAsFactors = F)
+setkey(tx_anno, transcript)
+
+gs_to_ensg = tx_anno[, .(ENSG=unique(gene)[1]), by="GeneSymbol"]
+gs_to_ensg[,n:=elementNROWS(ENSG), by="GeneSymbol"]
+setkey(gs_to_ensg, "GeneSymbol")
+
+ensg_to_gs = tx_anno[, .(GeneSymbol_list=list(unique(GeneSymbol))), by="gene"]
+ensg_to_gs[,n:=elementNROWS(GeneSymbol_list), by="gene"]
+ensg_to_gs[, geneid_fixed := sapply(strsplit(gene,"\\."), function(x) x[1])]
+ensg_to_gs[, GeneSymbol := lapply(GeneSymbol_list, paste, collapse=",")]
+setkey(ensg_to_gs, "geneid_fixed")
+
+tx_anno[, geneid_fixed:= sapply(strsplit(gene,"\\."), function(x) x[1])]
+gene_anno = tx_anno[, .(protein_coding_or_functional=any(TxType %in% c("protein_coding", "rRNA","lincRNA","miRNA","Mt_rRNA","Mt_tRNA"))), by=c("geneid_fixed","GeneSymbol")]
+setkey(gene_anno, "geneid_fixed")
+
+
+gene_ranges = sort(genes(M17db))
+```
+
+
+```{r}
+all_genes = data.table(geneid=gene_ranges$gene_id)
+all_genes[, geneid_fixed := sapply(strsplit(geneid,"\\."), function(x) x[1])]
+setkey(all_genes, "geneid")
+
+wi_samples = subset(ed, Condition =="Wnt-independent")$SampleID
+control_samples = subset(ed, Condition =="Uninfected")$SampleID
+
+# cnv_ranges = with(cnv_segments, GRanges(chrom, IRanges(start, end), sampleID=sampleID, index=1:nrow(cnv_segments)))
+# 
+# strelka_anno_ranges = with(strelka_anno_combined, GRanges(CHROM, IRanges(POS,POS), index=1:nrow(strelka_anno_combined)))
+
+all_tabs = list()
+for (s in sort(c(wi_samples, control_samples))) {
+  curr_gene_tab = all_genes
+  cnv_tmp = subset(cnv_anno_ensg, sampleID==s)
+  if (nrow(cnv_tmp)>0) {
+    curr_gene_tab = merge(curr_gene_tab, cnv_tmp, by.x="geneid", by.y="ensgene", all.x=T)  
+  } else {
+    #empty_tab = matrix(rep(as.character(NA), length(colnames(cnv_anno_ensg))), ncol=ncol(cnv_anno_ensg), nrow=1)
+    #colnames(empty_tab) = colnames(cnv_anno_ensg)
+    #empty_tab_dt = as.data.table(empty_tab)
+     empty_tab = data.table(sampleID=NA_character_, varID=NA_character_, chrom=NA_character_, start=NA_integer_, end=NA_integer_, seg.mean=NA_real_, call = NA_character_, ensgene = NA_character_ )
+    curr_gene_tab = merge(curr_gene_tab, empty_tab, by.x="geneid", by.y="ensgene", all.x=T)  
+  }
+  snv_tmp = subset(strelka_single_variants, sampleID==s)
+  if (length(snv_tmp)>0) {
+    snv_tmp_dt = data.table(chrom=as.character(seqnames(snv_tmp)), start=start(snv_tmp), end=end(snv_tmp))
+    snv_tmp_dt = cbind(snv_tmp_dt, as.data.table(mcols(snv_tmp)))
+    snv_tmp_dt$ALT = unstrsplit(CharacterList(snv_tmp_dt$ALT), sep = ",")
+    snv_tmp_dt$varID = names(snv_tmp)
+    
+    snv_tmp_dt = merge(snv_tmp_dt, strelka_anno_combined, by.x="varID", by.y="varID", all.x=T)
+    
+    gcounts = elementNROWS(snv_tmp_dt$ENSG)
+    snv_ts = with(snv_tmp_dt, data.table(sampleID=rep(sampleID, gcounts), varID=rep(varID, gcounts), chrom=rep(chrom, gcounts), start=rep(start, gcounts), end=rep(end, gcounts), ensgene = unlist(ENSG), HighestImpact = rep(HighestImpact, gcounts), AnnotationType = unlist(AnnotationType)   ) )
+    # a few ensgene IDs do not match the M17 list of genes. Most of those are abandonded ENSG IDs or strange fusion IDs
+    curr_gene_tab = merge(curr_gene_tab, snv_ts, by.x="geneid_fixed", by.y="ensgene", all.x=T)
+  } else {
+    empty_tab = data.table(sampleID=NA_character_, varID=NA_character_, chrom=NA_character_, start=NA_integer_, end=NA_integer_, ensgene = NA_character_, HighestImpact = NA_character_, AnnotationType = NA_character_   )
+    curr_gene_tab = merge(curr_gene_tab, empty_tab, by.x="geneid_fixed", by.y="ensgene", all.x=T)
+  }
+  
+  curr_gene_tab = merge(curr_gene_tab, ge_levels[, c("ENSG","gene_means", "ge_quartile","ge_rank")], by.x="geneid_fixed", by.y="ENSG", all.x=T, sort=F)
+  curr_gene_tab_filtered = subset(curr_gene_tab, !(is.na(sampleID.x) & is.na(sampleID.y)) )
+  curr_gene_tab_filtered[, sampleID := ifelse(!is.na(sampleID.x), sampleID.x, sampleID.y )]
+  curr_gene_tab_filtered[, mutationType:= ifelse(!is.na(sampleID.x) & !is.na(sampleID.y), "SNV/CNV", ifelse(is.na(sampleID.x), "SNV only", "CNV only")) ]
+  curr_gene_tab_filtered[["sampleID.x"]] <- NULL
+  curr_gene_tab_filtered[["sampleID.y"]] <- NULL
+  
+
+  if(nrow(curr_gene_tab_filtered)>0) {
+    all_tabs[[s]] = curr_gene_tab_filtered
+  }
+}
+
+all_variants_combined = do.call(rbind, all_tabs)
+setnames(all_variants_combined, colnames(all_variants_combined), gsub("\\.y$",".SNV",gsub("\\.x$",".CNV",colnames(all_variants_combined))))
+
+all_variants_combined[,GeneSymbol := unlist(lapply(ensg_to_gs[geneid_fixed]$GeneSymbol, paste,collapse=","))]
+
+all_variants_combined[, gene_chr := as.character(seqnames(gene_ranges[geneid]))]
+all_variants_combined[, gene_start := as.character(start(gene_ranges[geneid]))]
+
+all_variants_combined[, functional_tx:=gene_anno[geneid_fixed]$protein_coding_or_functional]
+
+setkey(all_variants_combined,"geneid_fixed")
+
+```
+
+# All variants - overview
+
+```{r}
+ggplot(all_variants_combined, aes(x=sampleID, fill=mutationType)) + geom_bar() + ggtitle("Number of genes affected by SNV and/or CNV per sample") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+ggplot(all_variants_combined, aes(x=sampleID, fill=mutationType)) + geom_bar() + ggtitle("Number of genes affected by SNV and/or CNV per sample") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_grid(mutationType~., scales="free_y") 
+```
+
+
+
+```{r}
+with(all_variants_combined, ftable(sampleID, mutationType ))
+```
+
+
+```{r}
+gene_vars_by_sample = dcast.data.table(all_variants_combined, geneid_fixed ~ sampleID, fun.aggregate = length, value.var="mutationType")
+
+sample_class = factor(ed[colnames(gene_vars_by_sample)[2:ncol(gene_vars_by_sample)],]$Condition)
+sample_mouse = factor(ed[colnames(gene_vars_by_sample)[2:ncol(gene_vars_by_sample)],]$MouseID)
+
+mut_counts_by_condition = as.data.frame(t(apply(gene_vars_by_sample[,2:ncol(gene_vars_by_sample), with=F], 1, function(x) tapply(x, sample_class, sum ))))
+rownames(mut_counts_by_condition) = gene_vars_by_sample$geneid_fixed
+
+# mut_counts_by_mouse = as.data.frame(t(apply(gene_vars_by_sample[,2:ncol(gene_vars_by_sample), with=F], 1, function(x) tapply(x, sample_mouse, sum ))))
+# rownames(mut_counts_by_mouse) = gene_vars_by_sample$geneid_fixed
+
+mut_counts_by_class_and_mouse = as.data.frame(t(apply(gene_vars_by_sample[,2:ncol(gene_vars_by_sample), with=F], 1, function(x) tapply(x, paste(sample_class, sample_mouse), sum ))))
+rownames(mut_counts_by_class_and_mouse) = gene_vars_by_sample$geneid_fixed
+
+genes_mutated_only_WI = rownames(mut_counts_by_condition)[mut_counts_by_condition$Uninfected==0 & mut_counts_by_condition$"Wnt-independent" >0]
+genes_mutated_WI_both_mice = rownames(mut_counts_by_class_and_mouse)[mut_counts_by_class_and_mouse$`Wnt-independent 2`>0 & mut_counts_by_class_and_mouse$`Wnt-independent 3`>0 ]
+  
+all_variants_combined[, mutated_only_WI:= rep(FALSE, nrow(all_variants_combined))]
+all_variants_combined[genes_mutated_only_WI, mutated_only_WI:= TRUE]
+
+all_variants_combined[, mutated_WI_both_mice:= rep(FALSE, nrow(all_variants_combined))]
+all_variants_combined[genes_mutated_WI_both_mice, mutated_WI_both_mice:= TRUE]
+```
+
+
+```{r}
+unique(all_variants_combined[, c("geneid_fixed","mutated_only_WI", "mutated_WI_both_mice")])[, .N, by=c("mutated_only_WI", "mutated_WI_both_mice")]
+```
+
+# Known Wnt-Pathway genes
+
+
+```{r}
+homologene_human_mouse = fread("../../../Data/External/homologene_9606_10090.txt")
+all_ensg = unique(all_variants_combined$geneid_fixed)
+entrezid = unique(select(org.Mm.eg.db, keys=all_ensg, keytype = "ENSEMBL", columns="ENTREZID"))
+entrezid$ENTREZID = as.integer(entrezid$ENTREZID)
+entrezid = subset(entrezid, !is.na(ENTREZID))
+
+mouse_to_human = merge(entrezid, homologene_human_mouse[!is.na(homologene_human_mouse$entrez_2),c("entrez_1","entrez_2","symbol_1","symbol_2"), with=F], by.x="ENTREZID", by.y="entrez_2", all.x=T, sort=F)
+```
+
+```{r}
+wnt_reactome_genes = read.table("../../../Data/External/GeneSets/WNT_Participating Molecules [R-HSA-195721].tsv", sep="\t", header=T)
+library(org.Hs.eg.db)
+wnt_proteins = as.character(subset(wnt_reactome_genes, MoleculeType=="Proteins")$Identifier)
+reactome_wnt_symbol = select(org.Hs.eg.db, keys=wnt_proteins, keytype="UNIPROT", columns="SYMBOL" )$SYMBOL
+reactome_wnt_mouse_ensg = subset(mouse_to_human, !is.na(symbol_1) & symbol_1 %in% reactome_wnt_symbol)$ENSEMBL
+
+
+kegg_genes = read.table("../../../Data/External/GeneSets/KEGG_WNT_PATHWAY.txt", sep="\t", header=T)
+
+kegg_wnt_symbol = select(org.Hs.eg.db, keys=as.character(kegg_genes$EntrezID), keytype="ENTREZID", columns="SYMBOL" )$SYMBOL
+
+kegg_wnt_mouse_ensg = subset(mouse_to_human, !is.na(symbol_1) & symbol_1 %in% kegg_wnt_symbol)$ENSEMBL
+
+kegg_p53_pathway = read.table("../../../Data/External/GeneSets/KEGG_TP53_MSIGv7.0.txt", sep="\t", header=T, stringsAsFactors = F)
+p53_entrez = kegg_p53_pathway$Entrez.Gene.Id
+p53_entrez = p53_entrez[!is.na(p53_entrez)]
+
+kegg_p53_mouse_ensg = subset(mouse_to_human, !is.na(symbol_1) & entrez_1 %in% p53_entrez)$ENSEMBL
+
+```
+
+There are `r length(wnt_proteins)` Wnt-pathway associated proteins in Reactome DB out of which `r length(reactome_wnt_mouse_ensg)` Ensembl-Gene-IDs for homologous mouse genes. 
+
+There are `r nrow(kegg_genes)` Wnt-pathway associated proteins in KEGG DB out of which `r length(kegg_wnt_mouse_ensg)` Ensembl-Gene-IDs for homologous mouse genes could be mapped. 
+
+There are `r nrow(kegg_p53_pathway)` p53-pathway associated proteins in KEGG DB out of which `r length(kegg_p53_mouse_ensg)` Ensembl-Gene-IDs for homologous mouse genes could be mapped. 
+
+Files with Wnt-pathway genes that have CNV or SNV are written to separater files for KEGG and Reactome genes. 
+
+## KEGG
+
+Number of genes from the KEGG Wnt-Pathway with mutation only in Wnt-independent clones:
+
+```{r}
+sum(kegg_wnt_mouse_ensg %in% all_variants_combined[mutated_only_WI==TRUE]$geneid_fixed)
+```
+
+```{r}
+all_variants_combined$KEGG_WNT = all_variants_combined$geneid_fixed %in% kegg_wnt_mouse_ensg
+
+
+aa = all_variants_combined[mutated_only_WI==TRUE & geneid_fixed %in% kegg_wnt_mouse_ensg]
+
+write.table(aa, file="KEGG_WNT_genes_with_variants.txt", sep="\t", row.names=F, quote=F)
+```
+
+## Reactome
+
+Number of genes from the Reactome Wnt-Pathway with mutation only in Wnt-independent clones:
+
+```{r}
+sum(reactome_wnt_mouse_ensg %in% all_variants_combined[mutated_only_WI==TRUE]$geneid_fixed)
+```
+
+```{r}
+all_variants_combined$Reactome_WNT = all_variants_combined$geneid_fixed %in% reactome_wnt_mouse_ensg
+
+aa = all_variants_combined[mutated_only_WI==TRUE & geneid_fixed %in% reactome_wnt_mouse_ensg]
+
+write.table(aa, file="REACTOME_WNT_genes_with_variants.txt", sep="\t", row.names=F, quote=F)
+```
+
+
+## P53 pathway genes
+
+Number of genes from the Reactome Wnt-Pathway with mutation only in Wnt-independent clones:
+
+```{r}
+sum(kegg_p53_mouse_ensg %in% unique(all_variants_combined[mutated_only_WI==TRUE]$geneid_fixed))
+```
+```{r}
+all_variants_combined$KEGG_P53 = all_variants_combined$geneid_fixed %in% kegg_p53_mouse_ensg
+```
+
+
+## Pan-Cancer driver genes
+
+We here use a list of pan-cancer driver genes from the TCGA PanCancer consortium, published in 2018 (Bailey et al. Cell. 2018 Apr 5;173(2):371-385.e18. doi: 10.1016/j.cell.2018.02.060.)
+
+```{r, message=F}
+pan_cancer_drivers = read.table("../../../Data/External/GeneSets/PanCancerDriverGenes_TCGA_2018.txt.csv", sep="\t", header=T, comment.char="", na.strings = c("NA","#N/A"), stringsAsFactors = F )
+
+colnames(pan_cancer_drivers)[4] = "Tumor.suppressor.or.oncogene.prediction"
+
+pan_cancer_drivers_to_mouse = merge(pan_cancer_drivers, mouse_to_human, by.x="Gene", by.y="symbol_1", sort=F)
+pan_cancer_drivers_mouse_dt = as.data.table(pan_cancer_drivers_to_mouse)
+
+tmp = pan_cancer_drivers_mouse_dt[, .(cancer=paste(Cancer, collapse=",")) , by=c("Gene","ENSEMBL", "Tumor.suppressor.or.oncogene.prediction")]
+pan_cancer_drivers_mouse_dt_short = tmp[, .(TCGA_PanCancer_prediction=paste(paste(cancer, Tumor.suppressor.or.oncogene.prediction, sep=":") , collapse="|")), by=c("Gene","ENSEMBL")]
+setkey(pan_cancer_drivers_mouse_dt_short, "ENSEMBL")
+
+all_variants_combined[, `:=`(pan_cancer_driver=ifelse(geneid_fixed %in% pan_cancer_drivers_mouse_dt_short$ENSEMBL, T, F), TCGA_PanCancer_prediction=pan_cancer_drivers_mouse_dt_short[geneid_fixed]$TCGA_PanCancer_prediction)]
+
+#tmp2 = all_variants_combined[mutated_only_WI==TRUE]
+#aa = merge(tmp2, pan_cancer_drivers_mouse_dt_short, by.x="geneid_fixed", by.y="ENSEMBL")
+
+#write.table(aa, file="TCGA_PanCancer_Driver_genes_with_variants.txt", sep="\t", row.names=F, quote=F)
+```
+
+
+```{r}
+write.table(all_variants_combined[mutated_only_WI==TRUE], file=file.path(result_folder, "all_variants_mutated_only_in_WI.txt"), sep="\t", row.names=F, quote=F)
+```
+
+
+```{r}
+save(all_variants_combined, file=file.path(result_folder, "All_variants_combined_annotated.Rdata"))
+```
+
+# Filtered Variants 
+
+We filter out SNV variants found in WI and NI and those SNV with LOW or MODIFIER impact level, keeping only HIGH and MODERATE levels as defined by SnpEff (http://snpeff.sourceforge.net/SnpEff_manual.html#input).
+
+```{r}
+all_variants_combined_filtered = all_variants_combined[mutated_only_WI==TRUE & (is.na(HighestImpact) | (!is.na(HighestImpact) & HighestImpact %in% c("HIGH","MODERATE")))]
+
+all_variants_combined_filtered[, MouseID:= ed[sampleID,]$MouseID]
+
+all_variants_combined_filtered$mutationType2 = ifelse(all_variants_combined_filtered$mutationType=="SNV/CNV", "SNV & CNV", all_variants_combined_filtered$mutationType)
+
+ed$sample_name_short = with(ed, paste0(Sample.Name, " Mouse ",MouseID))
+
+lvls = ed[order(ed$MouseID, ed$Sample.Name),]$sample_name_short
+ed$sample_name_short = factor(ed$sample_name_short, lvls)
+
+all_variants_combined_filtered$sample_name = ed[all_variants_combined_filtered$sampleID,]$sample_name_short
+
+
+```
+
+
+```{r, fig.height=8, fig.width=10}
+break_fun = function(x) { 
+  b = ceiling(x[1])
+  t = floor(x[2])
+  if(t < 100) {
+    bb=seq(b, t, by = floor((t-b)/4))
+  } else {
+    bb=seq(b, t, by = (10**(round(log10(t)) ) )/4)
+  } 
+  return(bb)
+}
+
+p = ggplot(all_variants_combined_filtered, aes(x=sample_name, fill=mutationType2)) + 
+  geom_bar() + 
+  #ggtitle("Number of genes affected by SNV and/or CNV per sample") + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), text=element_text(size=20)) + 
+  facet_grid(mutationType2~., scales="free_y") + 
+  scale_y_continuous(
+    breaks = break_fun,
+    expand = expand_scale(mult = c(0, 0.05))
+    ) + 
+  theme(legend.position="none") + 
+  xlab("")
+p + ggtitle("Number of genes affected by SNV and/or CNV per sample")
+```
+
+
+```{r}
+cairo_pdf(file=file.path(result_folder, "CNV_SNV_affected_genes.pdf"), width=8, height=8)
+print(p)
+dev.off()
+```
+
+## Mutations per Sample 
+
+### All (filtered) mutations
+
+```{r}
+with(all_variants_combined_filtered, ftable(sampleID, mutationType  ))
+```
+
+### All Pan-cancer drivers
+
+
+```{r}
+with(all_variants_combined_filtered, ftable(sampleID, mutationType, pan_cancer_driver  ))
+```
+
+### All WNT-pathway genes
+
+```{r}
+with(all_variants_combined_filtered, ftable(sampleID, mutationType, (Reactome_WNT | KEGG_WNT)  , dnn=c("Sample ID", "Mutation Type", " WNT gene")))
+```
+
+### All Pan-cancer drivers and WNT-pathway genes
+
+```{r}
+with(all_variants_combined_filtered, ftable(sampleID, mutationType, pan_cancer_driver & (Reactome_WNT | KEGG_WNT)  , dnn=c("Sample ID", "Mutation Type", "Pan-cancer driver & WNT gene")))
+```
+
+
+## Gene Lists
+
+Note that for the large number of genes affected by CNV we will not list all CNV affected genes but rather show relevant subsets. 
+
+### Mutations in which are not WNT pathway genes and either Pancancer or colorectal cancer (COAD/READ) drivers
+
+
+```{r}
+tmp = all_variants_combined_filtered[pan_cancer_driver & !(Reactome_WNT | KEGG_WNT) & grepl("PANCAN|COADREAD", TCGA_PanCancer_prediction, perl=T), .(genes = paste(unique(sort(paste0(GeneSymbol, ifelse(!is.na(call), paste0(" (", call, ")"), "")   ))),collapse=", ") ), by=c("MouseID", "mutationType")]
+ 
+kable(tmp[order(tmp$MouseID, tmp$mutationType)])
+```
+
+
+### Mutations in WNT-genes that are also in the PanCancer list
+
+```{r}
+#kable(all_variants_combined_filtered[pan_cancer_driver & (Reactome_WNT | KEGG_WNT), .(gene = unique(paste0(GeneSymbol,"-",mutationType)) ), by="MouseID"])
+
+tmp = all_variants_combined_filtered[pan_cancer_driver & (Reactome_WNT | KEGG_WNT) & grepl("PANCAN|COADREAD", TCGA_PanCancer_prediction, perl=T), .(genes = paste(unique(sort(paste0(GeneSymbol, ifelse(!is.na(call), paste0(" (", call, ")"), "")   ))),collapse=", ") ), by=c("MouseID", "mutationType")]
+
+kable(tmp[order(tmp$MouseID, tmp$mutationType)])
+```
+
+### Genes affected in both mice
+
+Only functional genes (protein coding, miRNA, linRNA and some other relevant RNA species) are shown which have been found mutated (SNV and/or CNV) in both mice. 
+
+```{r}
+tmp = all_variants_combined_filtered[mutated_WI_both_mice==TRUE & functional_tx==TRUE, .(genes = paste(unique(sort(paste0(GeneSymbol, ifelse(!is.na(call), paste0(" (", call, ")"), "")   ))),collapse=", ") ), by=c("MouseID", "mutationType")]
+
+kable(tmp[order(tmp$MouseID, tmp$mutationType)])
+```
+
+

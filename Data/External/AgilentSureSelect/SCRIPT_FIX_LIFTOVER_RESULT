@@ -1,0 +1,1 @@
+cat MouseExome_mm10_liftover_Covered.bed | sed -e 's/^chrM/chrMT/'| sed -e 's/^chr//' | perl -ne '$line=$_; $line =~ s/\R//g; print $line, "\t.\t.\n"' > MouseExome_mm10_liftover_Covered_fixed_chroms.bed

@@ -1,0 +1,7 @@
+java -Xmx4g -jar /data_genome1/SharedSoftware/SnpEff/snpEff.jar -c /data_genome1/SharedSoftware/SnpEff/snpEff.config GRCm38.86 ../Colibactin_Strelka_calls_merged.vcf  > Colibactin_Strelka_calls_merged_SnpEff.vcf
+bgzip Colibactin_Strelka_calls_merged_SnpEff.vcf
+tabix -p vcf Colibactin_Strelka_calls_merged_SnpEff.vcf.gz
+
+python vcf_to_ts_csv_SnpEff_plus_filters.py -o Colibactin_Strelka_exome_calls.txt Colibactin_Strelka_calls_merged_SnpEff.vcf
+#bcftools annotate -c "ID" -a ../../../Genotype_mouse/129P2_and_C57BL6_calls.vcf.gz  variants_PASS_QUAL_gt_20_somatic_only_SnpEff.vcf.gz > a.vcf
+
