@@ -4,3 +4,4 @@ This is the code and accompanying data used for generation of part of the data f
 
 Please refer to file README_FIGURE_MAPPING to find more information on scripts used for any of the figures. 
 
+[![DOI](https://zenodo.org/badge/221463622.svg)](https://zenodo.org/badge/latestdoi/221463622)
