@@ -32,8 +32,14 @@
   snv_env = new.env()
   load("../SNV_Strelka_aggregated/Colibactin_Exome_Strelka_Calls_both_mice.Rdata", envir=snv_env)
   snv_indel_variants = snv_env[["all_variants"]]
-  snv_indel_variants = snv_indel_variants[snv_indel_variants$DP < 150]
+
+  snv_indel_variants$AF = snv_indel_variants$AC / snv_indel_variants$DP
   
+  sample_count = table(names(snv_indel_variants))
+  snv_indel_variants$sample_count = integer(length(snv_indel_variants))
+  snv_indel_variants$sample_count = sample_count[names(snv_indel_variants)]
+  
+  snv_indel_variants = snv_indel_variants[snv_indel_variants$DP < 150 & snv_indel_variants$DP >= 10 & snv_indel_variants$AC >= 3 & !snv_indel_variants$multiallelic & snv_indel_variants$AF >= 0.25]
   
   #######################################################################################################
   # Mutated genes with annotations
