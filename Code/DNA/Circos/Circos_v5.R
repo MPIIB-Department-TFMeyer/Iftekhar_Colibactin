@@ -57,7 +57,7 @@
     
     #circos.par("track.height" = 0.97, gap.degree = 0, canvas.xlim=c(-1.5,1.5), canvas.ylim=c(-1.5,1.5))
     
-    cairo_pdf(file=paste(output_file_name,".pdf", sep=""), width=20, height=20)
+    cairo_pdf(file=paste(output_file_name,".pdf", sep=""), width=10, height=10)
     
     selected_chroms = paste("chr", c(as.character(1:19),"X","Y"), sep="")
     
@@ -68,17 +68,12 @@
     names(track_names) = sample_names
     
     ordered_sample_names = names(track_order)[order(track_order)] # from outside to inside
+
+    circos.initializeWithIdeogram(species="mm10", chromosome.index = selected_chroms, labels.cex=1.5, axis.labels.cex=0.5 )
     
-    #dummy_data = data.frame(chr=selected_chroms, start=0, end=0, copy.number = 1, value1=0, stringsAsFactors = FALSE)
-    
-    circos.initializeWithIdeogram(species="mm10", chromosome.index = selected_chroms )
-    
-    circos.par("track.height" = 0.08)
+    circos.par("track.height" = 0.07)
     circos.par("cell.padding" = c(0, 0, 0, 0))
-    
-    # all_input_data=list()
-    # all_input_data[["TEST"]] = data.frame(chr=c("chr1","chr1"), start=c(1,100e6), end=c(1e6, 110e6), foo=c(3,-3), value=c(-2, 2), stringsAsFactors = FALSE)
-    
+
     my_panel_fun = function(region, value, ...) {
       up = value[,2] > 0
       circos.genomicLines(region[up, ], value[up,], lwd=2, numeric.column = 2, 
@@ -108,15 +103,15 @@
       return(region)
     }
     
-    circos.genomicTrackPlotRegion(subset(gene_pos, class=="P53"), ylim = c(0, 1), panel.fun = function(region, value, ...) {
-      circos.genomicText(region, value, y = 0, labels.column = 1, facing = "clockwise", adj = c(0, 0.5), cex = 1, posTransform = posTransform.fun)
-    }, track.height = 0.05, bg.border = NA)
+    # circos.genomicTrackPlotRegion(subset(gene_pos, class=="P53"), ylim = c(0, 1), panel.fun = function(region, value, ...) {
+    #   circos.genomicText(region, value, y = 0, labels.column = 1, facing = "clockwise", adj = c(0, 0.5), cex = 1, posTransform = posTransform.fun)
+    # }, track.height = 0.05, bg.border = NA)
     
     circos.genomicPosTransformLines(gene_pos, posTransform = posTransform.fun, track.height = 0.04, col = ifelse(gene_pos$class=="P53", "red", ifelse(gene_pos$class=="PanCancer","black", "green")))
     
     #######################################################
     # SNV rainfall
-    circos.genomicRainfall(snv_data, pch = 16, cex = 2, col = c("#FF000080"))
+    circos.genomicRainfall(snv_data, pch = 16, cex = 1.1, col = c("#FF000080"))
     
     for (n in ordered_sample_names) {
       sector_data = cnv_data[[n]]
@@ -124,13 +119,10 @@
                           panel.fun = my_panel_fun)
     }
     
-    # cols = rainbow(length(selected_chroms))
-    # names(cols) = selected_chroms
-    
     for (cc in selected_chroms) {
       for (tt in ordered_sample_names) {
-        ti = track_order[tt] + 5 # first two tracks are karyogram + position + 2 tracks for genes + 1 Rainfall
-        #circos.updatePlotRegion(cc, tt, bg.col = cols[g]) 
+        ti = track_order[tt] + 4 # first two tracks are karyogram + position + 1 track for genes + 1 Rainfall
+        
         sector_data = subset(cnv_data[[tt]], chr==cc)
         
         sector.xlim = get.cell.meta.data("xlim", sector.index = cc, track.index = ti)
@@ -164,10 +156,6 @@
   
   sample_to_SNV_calls = c("Mouse2"="2702_WI", "Mouse3"="3466_WI")
 
-  #WI_samples = c(paste0("2702_",c("D","E","F","G","H")),paste0("3466_",c("D","E","F","G","H")) )
-    
-  #snv_indel_variants$sampleID2 = paste0(substr(snv_indel_variants$sampleID, 1, 5),ifelse(snv_indel_variants$sampleID %in% WI_samples, "WI","NI"))
-  
   for (m in names(all_samples)) {
     # filter SNV sites
     snv_sites = reduce(snv_indel_variants[snv_indel_variants$sampleID==sample_to_SNV_calls[m]])
@@ -188,7 +176,7 @@
     mid_pos = (start(gene_pos) + end(gene_pos))/2
     gene_pos_df = data.frame(chr=seqnames(gene_pos), start=mid_pos, end=mid_pos, row.names=gene_pos$geneid_fixed )
     gene_pos_df$GeneSymbol = sel_genes_unique[rownames(gene_pos_df)]$GeneSymbol
-    #gene_pos_df$PanCancerDriver = sel_genes_unique[rownames(gene_pos_df)]$PanCancerDriver
+    
     gene_pos_df$class = with(gene_pos_df, ifelse(sel_genes_unique[rownames(gene_pos_df)]$KEGG_P53,"P53", ifelse(sel_genes_unique[rownames(gene_pos_df)]$PanCancerDriver, "PanCancer", "Wnt")))
     
     circos_fun(cnv_data = all_input_data, snv_data = snv_sites_df, gene_pos = gene_pos_df,  output_file_name = file.path(result_folder, paste("Circos",m,format(Sys.time(), "%Y-%m-%d"),"v5", sep="_")), all_samples[[m]] )

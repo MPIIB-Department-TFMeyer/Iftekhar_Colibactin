@@ -1,0 +1,217 @@
+---
+title: "Analysis of SV hits called with Svaba at PN/HN in MB208 samples (mice 2 and 3)"
+author: "Hilmar Berger"
+output:
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+library(GenomicRanges)
+
+library(VariantAnnotation)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(seqLogo)
+
+source("../Mutations_at_CDM/trinuc_signaturesl.R")
+```
+
+# Overview
+
+We analyze here samples from MB208 sequenced by WGS, in particular structural variants (SV) mapped to colibactin associated motifs (AAWWTT, AAATT/AATTT and AAAAT/ATTTT).
+
+The goal is to determine the impact of CAM on driver genes in Wnt-independent samples.
+
+
+```{r}
+pn_env = new.env()
+load("../Mutations_at_CDM/Exon_ranges_Gencode_and_PN_pattern_sites.Rdata", envir=pn_env)
+
+hn_env = new.env()
+load("../Mutations_at_CDM/Exon_ranges_Gencode_and_HN_pattern_sites.Rdata", envir=hn_env)
+```
+
+```{r}
+load("../SV_Svaba/All_SV_sites.Rdata")
+all_sv_sites = all_sv_sites[all_sv_sites$QUAL >= 10 & all_sv_sites$AD >= 5]
+
+all_sv_sites$id = paste0(seqnames(all_sv_sites),"_", start(all_sv_sites),"_", end(all_sv_sites))
+
+counts = table(all_sv_sites$id)
+all_sv_sites$detection_count = as.integer(counts[all_sv_sites$id])
+
+all_sv_sites$direction = ifelse(substr(all_sv_sites$ALT,1,1) %in% c("[","]"),"B","A")
+
+```
+
+
+<!-- ```{r} -->
+
+<!-- all_files=list.files("../../SvABA_reseq_mouse_2_and_3/SnpEff/", pattern="*.vcf", full.names = T) -->
+
+<!-- all_vcf = list() -->
+<!-- all_sites = list() -->
+<!-- all_sv_sites = c() -->
+<!-- for (ff in all_files) { -->
+<!--   sn = gsub(".svaba.somatic.sv.annotated.vcf","",basename(ff)) -->
+<!--   all_vcf[[sn]] = readVcf(ff) -->
+<!--   tmp = rowRanges(all_vcf[[sn]]) -->
+<!--   tmp$Sample = sn -->
+
+<!--   # Before: breakpoint is before the position, after: breakpoint is after the position -->
+<!--   tmp$direction = ifelse(substr(tmp$ALT,1,1) %in% c("[","]"),"B","A") -->
+
+<!--   all_sites[[sn]] = tmp -->
+<!--   if(length(all_sv_sites)==0) {       -->
+<!--     all_sv_sites = tmp -->
+<!--   } else { -->
+<!--     all_sv_sites = append(all_sv_sites, tmp)   -->
+<!--   } -->
+<!-- } -->
+
+<!-- all_sv_sites$id = paste0(seqnames(all_sv_sites),"_", start(all_sv_sites),"_", end(all_sv_sites)) -->
+
+<!-- counts = table(all_sv_sites$id) -->
+<!-- all_sv_sites$detection_count = as.integer(counts[all_sv_sites$id]) -->
+<!-- ``` -->
+
+
+## Mutation counts per sample and cancer entity/cohort
+
+```{r, fig.width=14, fig.height=8}
+par(mar=c(10,4,4,1))
+tmp = mcols(all_sv_sites)
+ggplot(as.data.frame(tmp), aes(x=Sample)) + geom_bar() + scale_y_log10()
+```
+
+There are `r length(all_sv_sites)` mutations in this data set.
+
+```{r}
+mutations_at_pattern <- function(mutation_ranges, pattern_ranges, palindrome_ref_strand="+") {
+  mutated_gene_ovlps = list()
+  all_mutated_gene_hits = list()
+  # for all patterns
+
+  pattern_ranges$region_ref_position = ifelse(strand(pattern_ranges)=="+", start(pattern_ranges), end(pattern_ranges) )
+  all_pattern = DNAStringSet(sort(unique(as.character(pattern_ranges$string))))
+  rc = reverseComplement(all_pattern)
+  first_occurrence =  unlist(Map(function(x) match(x, all_pattern), rc))
+  first_occurrence[is.na(first_occurrence)] <- 9e6L
+  rc_pattern_dup = all_pattern[!(1:length(all_pattern) <= first_occurrence)]
+  pattern_ranges = pattern_ranges[! pattern_ranges$string %in% rc_pattern_dup]
+  
+  # identify overlaps of mutations with selected pattern sites
+  pattern_ovlps = findOverlaps(mutation_ranges, pattern_ranges, ignore.strand=T, type = "within")
+  
+  subject_hits_tmp = pattern_ranges[subjectHits(pattern_ovlps)]
+  
+  # for palindromic target motifs we ignore any hits on the minus strand
+  palindromic_not_on_ref_strand = (strand(subject_hits_tmp)!=palindrome_ref_strand & subject_hits_tmp$palindromic)
+  ovlp_orig = pattern_ovlps
+  pattern_ovlps = pattern_ovlps[!palindromic_not_on_ref_strand]
+  
+  qH = queryHits(pattern_ovlps)
+  
+  selected_target_regions = pattern_ranges[subjectHits(pattern_ovlps)]
+  selected_query_pos = mutation_ranges[qH]
+  
+  motif_strand_dir = ifelse(strand(selected_target_regions)=="+", 1,-1)
+  bp_dist = motif_strand_dir *  (start(selected_query_pos) - selected_target_regions$region_ref_position)
+  
+  min_bp_dist_per_query = tapply(abs(bp_dist), qH, min)
+  
+  result = data.frame(query_index = qH, distance = bp_dist, subject_index= subjectHits(pattern_ovlps), stringsAsFactors = F)
+  result$min_bp_dist = min_bp_dist_per_query[as.character(qH)]
+  result = subset(result, min_bp_dist == abs(distance))
+  
+  mutation_ranges$pattern_hit = "other"
+  mutation_ranges$pattern_hit[queryHits(pattern_ovlps)] = as.character(pattern_ranges[subjectHits(pattern_ovlps)]$string)
+  mutation_ranges$pattern_pos = NA
+  mutation_ranges$pattern_pos[result$query_index] = result$distance
+  
+  return(mutation_ranges)
+} 
+
+```
+
+# Mutations at selected HN/PN sites 
+
+```{r}
+mr = all_sv_sites
+
+pattern_pos_PN_exonic_only =  get("pattern_pos_exonic_only", pn_env)
+mutation_pattern_hits = mutations_at_pattern(mr, pattern_pos_PN_exonic_only)
+
+mr$pattern_hit_pn = mutation_pattern_hits$pattern_hit
+mr$pattern_pos_pn = mutation_pattern_hits$pattern_pos
+
+pattern_pos_HN_exonic_only =  get("pattern_pos_exonic_only", hn_env)
+mutation_pattern_hits = mutations_at_pattern(mr, pattern_pos_HN_exonic_only)
+
+mr$pattern_hit_hn = mutation_pattern_hits$pattern_hit
+mr$pattern_pos_hn = mutation_pattern_hits$pattern_pos
+
+sv_pattern_hits = mr
+```
+
+```{r}
+dd = as.data.table(mcols(sv_pattern_hits))
+dd$overlapping_CAM_5 = ifelse(dd$pattern_hit_pn=="other","no","yes")
+dd$overlapping_CAM_6 = ifelse(dd$pattern_hit_hn=="other","no","yes")
+
+dd$region_class = ifelse(dd$overlapping_CAM_5=="yes" | dd$overlapping_CAM_6=="yes", "CAM", "other")
+dd$protein_impact=T
+
+stats_by_case = dd[, .(total_variants=.N, total_prot_changing_variants=sum(protein_impact), total_CAM_5=sum(pattern_hit_pn!="other"), total_CAM_6=sum(pattern_hit_hn!="other")), by=c("Sample")]
+stats_by_case
+```
+
+```{r}
+tmp = dd[, .(count=.N), by=c("overlapping_CAM_6","overlapping_CAM_5")]
+setorder(tmp, "overlapping_CAM_6","overlapping_CAM_5")
+tmp
+```
+
+# Sequence preferences around SV breakpoints
+
+## All samples
+
+```{r}
+ranges_unique = all_sv_sites[all_sv_sites$detection_count==1]
+seqs = getSeq(BSgenome.Mmusculus.UCSC.mm10, paste0("chr",seqnames(ranges_unique)), start=ifelse(ranges_unique$direction=="A",start(ranges_unique)-5, start(ranges_unique)-6), end=ifelse(ranges_unique$direction=="A", end(ranges_unique)+6,end(ranges_unique)+5))
+tmp = consensusMatrix(seqs)[c("A","C","G","T"),]
+tmp_rel = sweep(tmp, 2, apply(tmp,2,sum), "/")
+seqLogo(makePWM(tmp_rel), ic.scale=F)
+```
+
+## Only WI samples
+
+```{r}
+ranges_unique = all_sv_sites[all_sv_sites$detection_count==1 & all_sv_sites$Sample %in% c("MOUlyuRAAACAAA","MOUlyuRAAAFAAA")]
+#seqs = getSeq(BSgenome.Mmusculus.UCSC.mm10, paste0("chr",seqnames(ranges_unique)), start=start(ranges_unique)-6, end=end(ranges_unique)+6)
+seqs = getSeq(BSgenome.Mmusculus.UCSC.mm10, paste0("chr",seqnames(ranges_unique)), start=ifelse(ranges_unique$direction=="A",start(ranges_unique)-5, start(ranges_unique)-6), end=ifelse(ranges_unique$direction=="A", end(ranges_unique)+6,end(ranges_unique)+5))
+tmp = consensusMatrix(seqs)[c("A","C","G","T"),]
+tmp_rel = sweep(tmp, 2, apply(tmp,2,sum), "/")
+seqLogo(makePWM(tmp_rel), ic.scale=F)
+seqLogo(makePWM(tmp_rel), ic.scale=T)
+```
+
+```{r}
+pdf(file="Sequences_around_SV_breakpoints.pdf", width=8, height=6)
+seqLogo(makePWM(tmp_rel), ic.scale=F) + geom_vline(xintercept = 7)
+dev.off()
+```
+

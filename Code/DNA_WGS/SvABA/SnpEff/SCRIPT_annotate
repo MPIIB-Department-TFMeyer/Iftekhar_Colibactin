@@ -1,0 +1,10 @@
+SAMPLES=$(ls -d ../MOU*)
+
+for s in $SAMPLES; do
+	sn=$(basename $s)
+	java -Xmx4g -jar /data_genome1/SharedSoftware/SnpEff/snpEff.jar -c /data_genome1/SharedSoftware/SnpEff/snpEff.config GRCm38.86 ../${sn}/${sn}.svaba.somatic.sv.vcf  > ${sn}.svaba.somatic.sv.annotated.vcf
+	#bgzip 
+	#tabix -p vcf Colibactin_Strelka_calls_merged_SnpEff.vcf.gz
+done
+#bcftools annotate -c "ID" -a ../../../Genotype_mouse/129P2_and_C57BL6_calls.vcf.gz  variants_PASS_QUAL_gt_20_somatic_only_SnpEff.vcf.gz > a.vcf
+

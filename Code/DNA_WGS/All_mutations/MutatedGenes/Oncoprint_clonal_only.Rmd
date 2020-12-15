@@ -1,0 +1,438 @@
+---
+title: "Oncoprint"
+author: "Hilmar Berger"
+output:
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+rm(list=ls())
+library(oncoprint)
+library(data.table)
+library(org.Mm.eg.db)
+library(ggpubr)
+```
+
+```{r}
+my_oncoprint <- function (M, keys = list(somatic = "MUT", germline = "GERMLINE", 
+    amp = "AMP", del = "HOMDEL", upreg = "UP", downreg = "DOWN"), 
+    sortGenes = FALSE) 
+{
+    all <- melt(M, varnames = c("gene", "patient"), value.name = "alteration")
+    genes <- na.omit(unique(as.character(all$gene)))
+    patients <- na.omit(unique(as.character(all$patient)))
+    e <- data.frame(gene = NA, patient = NA, alteration = NA)
+    data <- list()
+    for (alteration in names(keys)) {
+        data[[alteration]] <- all[grep(pattern = keys[[alteration]], 
+            all$alteration), ]
+        if (nrow(data[[alteration]]) == 0) 
+            data[[alteration]] <- e
+        data[[alteration]]$gene <- factor(data[[alteration]]$gene, 
+            levels = genes)
+        data[[alteration]]$gene_y <- 0
+    }
+    background <- as.data.frame(matrix(0, nc = length(patients), 
+        nr = length(genes)))
+    colnames(background) <- patients
+    background$gene <- genes
+    background.m <- melt(background, id.vars = "gene", variable.name = "patient")
+    gene_y_map <- data.frame(gene = genes, y = order(genes, decreasing = TRUE))
+    background.m$gene_y <- gene_y_map$y[match(background.m$gene, 
+        gene_y_map$gene)]
+    mutmat <- as.data.frame(matrix(0, nc = length(patients), 
+        nr = length(genes)))
+    colnames(mutmat) <- patients
+    rownames(mutmat) <- genes
+    mutmat <- mutmat[rev(gene_y_map$y), ]
+    mutmat <- incrementMatrix(M = mutmat, events = data$amp, 
+        inc = 128)
+    mutmat <- incrementMatrix(M = mutmat, events = data$del, 
+        inc = 64)
+    mutmat <- incrementMatrix(M = mutmat, events = data$somatic, 
+        inc = 32)
+    mutmat <- incrementMatrix(M = mutmat, events = data$germline, 
+        inc = 16)
+    mutmat <- incrementMatrix(M = mutmat, events = data$upreg, 
+        inc = 8)
+    mutmat <- incrementMatrix(M = mutmat, events = data$downreg, 
+        inc = 4)
+    mutmat <- memoSort(mutmat, sortGenes = sortGenes)
+    levels(background.m$patient) <- colnames(mutmat)
+    for (gene in genes) {
+        idx.somatic <- which(data$somatic$gene == gene)
+        idx.germline <- which(data$germline$gene == gene)
+        if (length(idx.somatic) > 0 & length(idx.germline) > 
+            0) {
+            data$somatic$gene_y[idx.somatic] <- gene_y_map$y[which(gene_y_map$gene == 
+                gene)] + 0.25
+            data$germline$gene_y[idx.germline] <- gene_y_map$y[which(gene_y_map$gene == 
+                gene)] - 0.25
+        }
+        else if (length(idx.somatic) > 0) {
+            data$somatic$gene_y[idx.somatic] <- gene_y_map$y[which(gene_y_map$gene == 
+                gene)]
+        }
+        else if (length(idx.germline) > 0) {
+            data$germline$gene_y[idx.germline] <- gene_y_map$y[which(gene_y_map$gene == 
+                gene)]
+        }
+    }
+    data$amp$gene_y <- gene_y_map$y[match(data$amp$gene, gene_y_map$gene)]
+    data$del$gene_y <- gene_y_map$y[match(data$del$gene, gene_y_map$gene)]
+    data$upreg$gene_y <- gene_y_map$y[match(data$upreg$gene, 
+        gene_y_map$gene)]
+    data$downreg$gene_y <- gene_y_map$y[match(data$downreg$gene, 
+        gene_y_map$gene)]
+    square_w <- 0.9
+    square_h <- 0.4
+    ggplot(background.m, aes(x = patient, y = gene_y)) +
+      geom_tile(fill = "gray", colour = "white", size = 1.1) + scale_y_continuous(breaks = unique(background.m$gene_y), labels = unique(background.m$gene)) + 
+      geom_tile(data = data$amp, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = 0.9, height = 0.9, fill = "red", colour = NA, size = 2) +
+      geom_tile(data = data$del, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = 0.9, height = 0.9, fill = "blue", colour = NA, size = 2) +
+      geom_tile(data = data$somatic, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = square_w, height = square_h, fill = "forestgreen") +
+      geom_tile(data = data$germline, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = square_w, height = square_h, fill = "purple", colour = NA) +
+      geom_tile(data = data$upreg, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = 0.7, height = 0.7, fill = NA, colour = "firebrick", size = 2) +
+      geom_tile(data = data$downreg, aes(x = patient, y = gene_y), inherit.aes = FALSE, width = 0.7, height = 0.7, fill = NA, colour = "dodgerblue", size = 2) + theme_minimal() +
+      xlab("Sample") + ylab("Gene")
+}
+```
+
+
+```{r}
+load("/data_genome2/projects/MB208_Colibactin/analysis/RNA/DGE-Analysis_batch2_M12/Results/2019-04-02/DGE_analysis_image.Rdata")
+sample_trans = c("MOUlyuRAAACAAA"="M2_WI_vs_uninfected","MOUlyuRAAAFAAA" = "M3_WI_vs_uninfected")
+
+all_dge = list()
+for (n in names(sample_trans)) {
+  tmp = all_results[[sample_trans[[n]]]]
+  all_dge[[n]] = data.frame(row.names = unlist(sapply(strsplit(tmp$Row.names, "\\."), `[`,1)), log2fc = tmp$log2FoldChange )
+}
+
+```
+
+
+
+```{r}
+load("All_variants_combined_annotated_WGS1_2_mice_recalled_CNV_clonal.Rdata")
+```
+
+
+    Ampilifications (AMP), red fill
+    Deletions (HOMDEL), blue fill
+    Somatic mutations (MUT), green box
+    Germline mutations (GERMLINE), purple box
+    Upregulation (UP), red outline
+    Downregulation (DOWN), blue outline
+
+
+```{r}
+get_l2fc_single = function(x, y) if(x %in% names(all_dge)) {all_dge[[x]][y,"log2fc"]} else {NA}
+get_l2fc = Vectorize(get_l2fc_single, vectorize.args = c("x","y"))
+
+all_variants_combined[, log2FC_WI_NI:= get_l2fc(sampleID, geneid_fixed) ]
+
+
+oncoprint_keys = keys = list(somatic = "MUT", germline = "GERMLINE", amp = "GAIN", del = "LOSS", upreg = "UP", downreg = "DOWN")
+
+all_variants_combined[, cnvType_oncoprint:=ifelse(!is.na(call), ifelse(call=="loss","LOSS","GAIN"), "")]
+all_variants_combined[, snvType_oncoprint:=ifelse(!is.na(HighestImpact), ifelse(HighestImpact %in% c("MODIFIER","LOW"), "","MUT"),"")]
+all_variants_combined[, mutType_oncoprint:=paste(cnvType_oncoprint, snvType_oncoprint, sep=";")]
+
+all_variants_combined[, exprType_oncoprint:=ifelse(!is.na(call), ifelse(log2FC_WI_NI< -0.5, "DOWN",ifelse(log2FC_WI_NI>0.5,"UP","")), "") ]
+all_variants_combined[, mutType_oncoprint_w_expr:=paste(cnvType_oncoprint, snvType_oncoprint, exprType_oncoprint, sep=";")]
+
+```
+
+
+```{r}
+homologene_human_mouse = fread("/data_genome1/References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt")
+all_ensg = unique(select(org.Mm.eg.db, keys=keys(org.Mm.eg.db), keytype = "ENTREZID", columns = "ENSEMBL")$ENSEMBL)
+
+entrezid = unique(select(org.Mm.eg.db, keys=all_ensg, keytype = "ENSEMBL", columns="ENTREZID"))
+entrezid$ENTREZID = as.integer(entrezid$ENTREZID)
+entrezid = subset(entrezid, !is.na(ENTREZID))
+
+#all_symbols = data.frame(GeneSymbol=unique(all_results[[1]]$GeneSymbol))
+mouse_to_human = merge(entrezid, homologene_human_mouse[!is.na(homologene_human_mouse$entrez_2),c("entrez_1","entrez_2","symbol_1","symbol_2"), with=F], by.x="ENTREZID", by.y="entrez_2", all.x=T, sort=F)
+```
+
+```{r}
+ed = data.frame(sampleID=c("MOUlyuRAAACAAA","MOUlyuRAAAFAAA"), label=c("WI 1","WI 2"))
+rownames(ed) = ed$sampleID
+```
+
+
+# Selected Colon Cancer Drivers with Wnt association
+
+```{r}
+#FAM123B is AMER1
+sel_genes = read.table(text = "APC
+FZD10
+TCF7L2
+FBXW7
+AMER1
+CTNNB1
+ARID1A
+SOX9
+AXIN2
+DKK1
+DKK2
+DKK3
+DKK4
+BCL9L
+BCL9
+RNF43
+", header=F, stringsAsFactors = F)$V1
+
+sel_genes_trans_tab = subset(mouse_to_human, symbol_1 %in% sel_genes)
+sel_genes_trans = sel_genes_trans_tab$symbol_2
+sel_genes_trans = append(sel_genes_trans, c("Mir34a", "Mir34b","Mir34c","Trp53"))
+```
+
+
+
+```{r, fig.height=7, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, GeneSymbol %in% sel_genes_trans), GeneSymbol ~ sampleID, value.var="mutType_oncoprint", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+unmutated_genes = sel_genes_trans[ !sel_genes_trans %in% rownames(oncoprint_mat)]
+unmutated_genes_mat = matrix(rep("", length(unmutated_genes)*2), length(unmutated_genes),2)
+rownames(unmutated_genes_mat) = unmutated_genes
+
+oncoprint_mat = rbind(oncoprint_mat, unmutated_genes_mat)
+oncoprint_mat = oncoprint_mat[order(rownames(oncoprint_mat)),]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p = oncoprint(oncoprint_mat, keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("")
+p
+```
+
+```{r}
+pdf("Oncoprint_Selected_Genes_clonal.pdf")
+print(p + theme(text=element_text(size=20)))
+dev.off()
+```
+
+
+
+# TCGA other than Wnt
+
+```{r}
+sel_genes2 = read.table(text = "TGFBR1
+TGFBR2
+ACVR2A
+ACVR1B
+SMAD2
+SMAD3
+SMAD4
+MYC
+PTEN
+PIK3R1
+PIK3CA
+IGF2
+IGF1R
+IRS2
+ERBB2
+ERBB3
+NRAS
+KRAS
+BRAF
+ATM
+TP53
+", header=F, stringsAsFactors = F)$V1
+
+sel_genes_trans_tab2 = subset(mouse_to_human, symbol_1 %in% sel_genes2)
+sel_genes_trans2 = sel_genes_trans_tab2$symbol_2
+```
+
+```{r, fig.height=7, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, GeneSymbol %in% sel_genes_trans2), GeneSymbol ~ sampleID, value.var="mutType_oncoprint_w_expr", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+unmutated_genes = sel_genes_trans[ !sel_genes_trans %in% rownames(oncoprint_mat)]
+unmutated_genes_mat = matrix(rep("", length(unmutated_genes)*2), length(unmutated_genes),2)
+rownames(unmutated_genes_mat) = unmutated_genes
+
+oncoprint_mat = rbind(oncoprint_mat, unmutated_genes_mat)
+oncoprint_mat = oncoprint_mat[order(rownames(oncoprint_mat)),]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p = oncoprint(oncoprint_mat, keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("")
+p
+```
+
+
+# All Wnt pathway genes (Reactome, KEGG) 
+
+## Genes mutated in both samples only 
+
+```{r, fig.height=10, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, (KEGG_WNT | Reactome_WNT) & ge_quartile != "Not expressed"), GeneSymbol ~ sampleID, value.var="mutType_oncoprint_w_expr", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt == 2,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p = oncoprint(oncoprint_mat_both_mutated, keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("")
+print(p)
+
+```
+
+```{r}
+pdf("Oncoprint_All_Wnt_Pathway_Genes_KEGG_and_Reactome_clonal.pdf", height=14, width=4)
+print(p + theme(text=element_text(size=20)))
+dev.off()
+```
+
+```{r, fig.height=8, fig.width=20}
+oncoprint(t(oncoprint_mat_both_mutated), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("")
+```
+
+
+# All Pancancer drivers from TCGA
+
+## Genes mutated in both samples only 
+
+```{r, fig.height=14, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, pan_cancer_driver & ge_quartile != "Not expressed"), GeneSymbol ~ sampleID, value.var="mutType_oncoprint", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt >= 1,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+oncoprint(t(oncoprint_mat_both_mutated), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12))
+```
+
+```{r, fig.height=14, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, (pan_cancer_driver | GeneSymbol %in% sel_genes_trans2 | GeneSymbol == "Cdk2") & ge_quartile != "Not expressed" ), GeneSymbol ~ sampleID, value.var="mutType_oncoprint_w_expr", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt >= 1,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p1 = my_oncoprint(t(oncoprint_mat_both_mutated[1:60,]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=18))
+p2 = my_oncoprint(t(oncoprint_mat_both_mutated[61:nrow(oncoprint_mat_both_mutated),]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=18))
+
+p_combined = ggarrange(p1,p2, ncol=1, align="v", heights = c(0.5, 0.5), common.legend = F)
+print(p_combined)
+```
+
+
+```{r}
+pdf("Oncoprint_Pancancer_and_COREAD_Driver_Genes_clonal.pdf", width=16, height=8)
+
+p1 = my_oncoprint(t(oncoprint_mat_both_mutated[1:60,]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12), axis.text.y = element_text(size=16))
+p2 = my_oncoprint(t(oncoprint_mat_both_mutated[61:nrow(oncoprint_mat_both_mutated),]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12), axis.text.y = element_text(size=16))
+
+p_combined = ggarrange(p1,p2, ncol=1, align="v", heights = c(0.5, 0.5), common.legend = F)
+
+print(p_combined + theme(text=element_text(size=12)))
+dev.off()
+```
+
+
+```{r, fig.height=14, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, (pan_cancer_driver | GeneSymbol %in% sel_genes_trans2 | GeneSymbol == "Cdk2") & ge_quartile != "Not expressed" ), GeneSymbol ~ sampleID, value.var="mutType_oncoprint", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt >= 1,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p1 = my_oncoprint(t(oncoprint_mat_both_mutated[1:60,]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=18))
+p2 = my_oncoprint(t(oncoprint_mat_both_mutated[61:nrow(oncoprint_mat_both_mutated),]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=18))
+
+p_combined = ggarrange(p1,p2, ncol=1, align="v", heights = c(0.5, 0.5), common.legend = F)
+print(p_combined)
+```
+
+
+```{r}
+pdf("Oncoprint_Pancancer_and_COREAD_Driver_Genes_no_expr_clonal.pdf", width=16, height=8)
+
+p1 = oncoprint(t(oncoprint_mat_both_mutated[1:60,]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12), axis.text.y = element_text(size=16))
+p2 = oncoprint(t(oncoprint_mat_both_mutated[61:nrow(oncoprint_mat_both_mutated),]), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12), axis.text.y = element_text(size=16))
+
+p_combined = ggarrange(p1,p2, ncol=1, align="v", heights = c(0.5, 0.5), common.legend = F)
+
+print(p_combined + theme(text=element_text(size=12)))
+dev.off()
+```
+
+
+```{r, fig.height=14, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, (pan_cancer_driver | GeneSymbol %in% sel_genes_trans2) & ge_quartile != "Not expressed" ), GeneSymbol ~ sampleID, value.var="mutType_oncoprint", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt >= 1,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+oncoprint(t(oncoprint_mat_both_mutated), keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 60, size=12))
+```
+
+# All COAD/READ drivers from TCGA
+
+## Genes mutated in both samples only 
+
+```{r, fig.height=6, warning=FALSE}
+tmp = dcast.data.table(subset(all_variants_combined, !is.na(TCGA_PanCancer_prediction) & grepl("COADREAD", TCGA_PanCancer_prediction) & ge_quartile != "Not expressed"), GeneSymbol ~ sampleID, value.var="mutType_oncoprint", fun.aggregate = function(x) paste(unique(sort(x)), collapse=";"))
+oncoprint_mat = as.matrix(tmp[, c("MOUlyuRAAACAAA", "MOUlyuRAAAFAAA")])
+rownames(oncoprint_mat) = tmp$GeneSymbol
+colnames(oncoprint_mat)  = ed[colnames(oncoprint_mat), "label"]
+
+mut_cnt = apply(gsub(";","",oncoprint_mat)!="", 1, sum)
+
+oncoprint_mat_both_mutated = oncoprint_mat[mut_cnt > 0,]
+
+vert_x <- theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=.5))
+
+p = oncoprint(oncoprint_mat_both_mutated, keys=oncoprint_keys) + coord_fixed() + vert_x + xlab("") + ylab("")
+p
+```
+
+
+```{r}
+pdf("Oncoprint_COREAD_Driver_Genes_clonal.pdf")
+print(p + theme(text=element_text(size=20)))
+dev.off()
+```

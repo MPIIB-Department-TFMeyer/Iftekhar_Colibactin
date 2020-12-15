@@ -1,0 +1,8 @@
+PROJECT_NAME=Colibactin_Strelka_calls_WGS_reseq_2_3
+
+java -Xmx4g -jar /data_genome1/SharedSoftware/SnpEff/snpEff.jar -c /data_genome1/SharedSoftware/SnpEff/snpEff.config GRCm38.86 ../${PROJECT_NAME}_merged.vcf  > ${PROJECT_NAME}_merged_SnpEff.vcf
+bgzip ${PROJECT_NAME}_merged_SnpEff.vcf
+tabix -p vcf ${PROJECT_NAME}_merged_SnpEff.vcf.gz
+
+#bcftools annotate -c "ID" -a ../../../Genotype_mouse/129P2_and_C57BL6_calls.vcf.gz  variants_PASS_QUAL_gt_20_somatic_only_SnpEff.vcf.gz > a.vcf
+

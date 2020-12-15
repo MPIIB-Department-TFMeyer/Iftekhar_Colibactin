@@ -1,0 +1,193 @@
+---
+title: "MB208_overview_figure, v2 - with considertion of clonal/subclonal variants"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(ggplot2)
+library(reshape2)
+library(ggpubr)
+library(data.table)
+library(xlsx)
+library(GenomicRanges)
+library(VariantAnnotation)
+```
+
+```{r}
+ed = read.xlsx("../../../metadata/SampleDescription_WGS.xls", sheetIndex = 1, stringsAsFactors=F)
+rownames(ed) = ed$SampleID
+#ed$MouseID = "M"
+ed$SampleDesc = paste(ed$MouseID, " ", ed$Name, sep="")
+ed = subset(ed, MouseID %in% c(1,2))
+
+ed$label = paste(ed$Condition, ed$CultureType, ed$MouseID)
+
+```
+
+
+# Filtered variants 
+
+## SNV/InDel
+
+We include the following variants: 
+
+- Depth of coverage >= 10 and < 150 (high coverage sites are mostly sites with paralogous regions or repetitive sequences)
+- Variant allele seen in at least 3 reads (this seems to be the fact for all variants called by Strelka)
+- Variant only seen in a single sample
+- Variant sites with multiple ALT alleles (there is none in this data set)
+
+Clonal variants are those with AF > 0.25.
+
+```{r}
+# SV/Indel data 
+load("../Colibactin_WGS_Strelka_Calls_reseq_2_3.Rdata")
+all_variants$varID = paste(seqnames(all_variants),":",start(all_variants),"_",all_variants$REF,"/",unstrsplit(CharacterList(all_variants$ALT),sep = ","),sep="")
+
+all_variants$af = all_variants$AC / all_variants$DP
+all_variants$clonality = ifelse(all_variants$af < 0.25, "Subclonal","Clonal")
+
+#mcols(all_variants) = merge(mcols(all_variants), ed, by.x="sampleID", by.y="SampleID", all.x=T, sort=F)
+
+sample_count = table(names(all_variants))
+all_variants$sample_count = integer(length(all_variants))
+all_variants$sample_count = sample_count[names(all_variants)]
+
+all_variants_filtered = all_variants[all_variants$DP < 150 & all_variants$DP >= 10 & all_variants$AC >= 3 & all_variants$sample_count == 1 & !all_variants$multiallelic]
+```
+
+```{r}
+d = data.table(SampleID = all_variants_filtered$sampleID, vartype = all_variants_filtered$vartype, clonality=all_variants_filtered$clonality)
+snv_indel_counts_ts = d[, .(count=.N), by=c("SampleID", "vartype")]
+dcast(snv_indel_counts_ts, SampleID ~ vartype, value.var="count")
+
+snv_indel_counts_clonality_ts = d[, .(count=.N), by=c("SampleID", "vartype", "clonality")]
+```
+
+# Structural variants called by SvABA
+
+We keep SV with QUAL >= 10 and at least 5 supporting reads.
+
+```{r}
+all_files=list.files("../../SvABA_reseq_mouse_2_and_3/SnpEff/", pattern="*.vcf", full.names = T)
+
+all_vcf = list()
+all_sites = list()
+all_sv_sites = c()
+for (ff in all_files) {
+  sn = gsub(".svaba.somatic.sv.annotated.vcf","",basename(ff))
+  all_vcf[[sn]] = readVcf(ff)
+  tmp = rowRanges(all_vcf[[sn]])
+  tmp_anno = info(all_vcf[[sn]])
+  tmp$ANNO = tmp_anno$ANN
+  tmp$SV_ID = tmp_anno$SCTG
+  tmp$SPAN = tmp_anno$SPAN
+  tmp$Sample = sn
+  tmp$SR = geno(all_vcf[[sn]])$SR[, 2]
+  tmp$DR = geno(all_vcf[[sn]])$DR[, 2]
+  tmp$AD = geno(all_vcf[[sn]])$AD[, 2]
+  tmp$DP = geno(all_vcf[[sn]])$DP[, 2]
+  all_sites[[sn]] = tmp
+  if(length(all_sv_sites)==0) {
+    all_sv_sites = tmp
+  } else {
+    all_sv_sites = append(all_sv_sites, tmp)  
+  }
+}
+
+all_sv_sites$breakpoint_id = paste0(seqnames(all_sv_sites),"_", start(all_sv_sites),"_", end(all_sv_sites))
+all_sv_sites$AF = all_sv_sites$AD / all_sv_sites$DP
+
+counts = table(all_sv_sites$breakpoint_id)
+all_sv_sites$detection_count = as.integer(counts[all_sv_sites$breakpoint_id])
+
+tmp_split = lapply(all_sv_sites$ANNO, function(x) unlist(strsplit(x, "\\|")))
+all_sv_sites$sv_type = sapply(tmp_split, `[`,2)
+all_sv_sites$impact = sapply(tmp_split, `[`,3)
+all_sv_sites$Gene = sapply(tmp_split, `[`,4)
+
+# This AF estimate is rather not very accurate - it seems to be hard to estimate DP right in presence of split reads and mapping problems; at least SvABA gives strange numbers for DP
+all_sv_sites$AF = ifelse(all_sv_sites$AD/all_sv_sites$DP > 1, 1, all_sv_sites$AD/all_sv_sites$DP)
+
+all_sv_sites_filtered = all_sv_sites[all_sv_sites$QUAL >= 10 & all_sv_sites$AD >= 5]
+# min AF for this QUAL >= 10 and AD >= 5 is 0.15 - good enough for our rough estimate of AF
+```
+
+```{r}
+d = data.table(SampleID = all_sv_sites_filtered$Sample, ID=all_sv_sites_filtered$SV_ID, vartype="Rearrangements")
+d = d[!duplicated(d$ID)]
+sv_counts_ts = d[, .(count=.N), by=c("SampleID", "vartype")]
+dcast(sv_counts_ts, SampleID ~ vartype, value.var="count")
+
+sv_counts_clonality_ts = sv_counts_ts
+sv_counts_clonality_ts$clonality = "Clonal"
+```
+
+```{r}
+d_ts = rbind(snv_indel_counts_clonality_ts, sv_counts_clonality_ts)
+d_ts = merge(d_ts, ed[,c("SampleID","label","Condition")], by="SampleID")
+colnames(d_ts) = c("SampleID","VarType","Clonality","Count", "label","Condition")
+d_ts$VarType = factor(d_ts$VarType, levels=c("Indel", "SNV", "Rearrangements") )
+
+```
+
+```{r}
+custom_cols = c(hsv(h=0.01, s = 0.3, v= 0.97),hsv(h=0.01, s = 0.56, v= 0.97),hsv(h=0.504, s = 0.2, v= 0.768),hsv(h=0.504, s = 1, v= 0.768))
+d_ts$group = factor(paste0(d_ts$Condition, " ", d_ts$Clonality), levels=c("Uninfected Subclonal","Uninfected Clonal","Wnt-independent Subclonal","Wnt-independent Clonal") )
+p = ggplot(d_ts) + geom_bar(aes(x=label, y=Count, fill=group), stat="identity") + facet_wrap(VarType ~ ., scale="free_y" ) + theme(axis.text.x = element_text(angle=90, hjust=1)) + xlab("") + scale_fill_manual(values = custom_cols, labels=levels(d_ts$group) )
+p
+```
+
+```{r}
+pdf("Overview_SNV_InDel_SV_count.pdf")
+print(p + theme(text=element_text(size=18), legend.position = "none") )
+dev.off()
+```
+
+
+# CNV calls
+
+CNV calls are all roughly with segment means (log2 scale) outside [-0.15..0.15].
+
+```{r}
+load("../../ControlFreeC_reseq_mouse_2_and_3/analysis/CN_calls_paired_recalled_CNV.Rdata")
+
+total_cnv_length = as.data.table(all_long_CN_calls_dt)[, .(total_cnv_length  = sum(ifelse(status != "nc", width, 0))/1e6  ), by="sample"]
+total_cnv_length = merge(total_cnv_length, ed[, c("SampleID", "Condition", "label")], by.x="sample", by.y="SampleID", all.x=T, sort=F)
+total_cnv_length$VarType = "CNV"
+```
+
+# Combined plots
+
+## All variants (subclonal + clonal)
+
+
+```{r, fig.width=10}
+p1 = ggplot(d_ts) + geom_bar(aes(x=label, y=Count, fill=group), stat="identity") + facet_wrap(VarType ~ ., scale="free_y" ) + theme(axis.text.x = element_text(angle=90, hjust=1), legend.position = "none") + xlab("") + scale_fill_manual(values = custom_cols, labels=levels(d_ts$group) )
+p2 = ggplot(total_cnv_length) + geom_bar(aes(x=label, y=total_cnv_length, fill=Condition), stat="identity") + theme(axis.text.x = element_text(angle=90, hjust=1)) + xlab("") + ylab("Genome length affected by CNV (MBases)") + facet_wrap(VarType ~ ., scale="free_y" )
+p = ggarrange(p1, p2, nrow=1, widths = c(3,1.9))
+print(p)
+```
+
+
+```{r}
+pdf("Overview_SNV_InDel_SV_count_and_CNV_length.pdf", width = 10)
+print(p + theme(text=element_text(size=18), legend.position = "none") )
+dev.off()
+```
+
+## Subclonal SNV/Indel only
+
+```{r, fig.width=10}
+p1 = ggplot(subset(d_ts, Clonality=="Clonal")) + geom_bar(aes(x=label, y=Count, fill=group), stat="identity") + facet_wrap(VarType ~ ., scale="free_y" ) + theme(axis.text.x = element_text(angle=90, hjust=1), legend.position = "none") + xlab("")
+p2 = ggplot(total_cnv_length) + geom_bar(aes(x=label, y=total_cnv_length, fill=Condition), stat="identity") + theme(axis.text.x = element_text(angle=90, hjust=1)) + xlab("") + ylab("Genome length affected by CNV (MBases)") + facet_wrap(VarType ~ ., scale="free_y" )
+p = ggarrange(p1, p2, nrow=1, widths = c(3,1.9))
+print(p)
+```
+
+
+
+```{r}
+pdf("Overview_Clonal_SNV_InDel_SV_count_and_CNV_length.pdf", width = 10)
+print(p + theme(text=element_text(size=18), legend.position = "none") )
+dev.off()
+```

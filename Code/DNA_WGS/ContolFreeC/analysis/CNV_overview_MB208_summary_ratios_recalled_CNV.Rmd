@@ -1,0 +1,191 @@
+---
+title: "CNV overview MB208 WGS - summary for paired analyses (ratios)"
+author: "Hilmar Berger"
+output:
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+rm(list=ls())
+library(naturalsort)
+library(data.table)
+library(modeest)
+library(RColorBrewer)
+library(pheatmap)
+library(GenomicRanges)
+library(readxl)
+library(GenomicFeatures)
+```
+
+
+
+```{r}
+ed = as.data.frame(read_xls("../../../metadata/SampleDescription_WGS.xls", sheet = 1))
+
+rownames(ed) = ed$SampleID
+
+
+load("All_LogRatio_Profiles_paired.Rdata")
+```
+
+
+
+```{r}
+load("All_CNV_segments_paired_recalled.Rdata")
+```
+
+
+
+
+## CN ratio heatmap
+
+Here we show genomewide profiles as a heatmap where red colors denote genomic gains and blue colors  hetero- or homozygous genomic losses. Data is ordered top-down by chromosome and genomic position within chromosomes. Please note that small segments might be hard to spot. 
+
+```{r}
+chrom_info = read.table("/data_genome1/References/GenomeIndices/MusMusculus/BWA/GRCm38/GRCm38.fai", sep="\t", header=F, stringsAsFactors = F)
+
+chrom_info = subset(chrom_info, V1 %in% c(as.character(1:19),"X","Y"))
+chrom_info = chrom_info[naturalorder(chrom_info$V1),]
+
+seq_lengths = chrom_info$V2
+names(seq_lengths) = chrom_info$V1
+tiles = unlist(tileGenome(seqlengths = seq_lengths, tilewidth = 1e5, cut.last.tile.in.chrom = T))
+
+tiles_with_CN_calls = list()
+
+for (n in names(all_long_CN_calls)) {
+  curr_sample = tiles
+  tmp = all_long_CN_calls[[n]]
+  curr_cnv = GRanges(gsub("chr","",tmp$chr), IRanges(tmp$start, tmp$end), log2ratio=ifelse(tmp$copy.number==0, -2, log2(tmp$copy.number/2)))
+  ovlp = findOverlaps(curr_cnv, tiles)
+  curr_sample$Log2Ratio = 0
+  curr_sample$Log2Ratio[subjectHits(ovlp)] = curr_cnv[queryHits(ovlp)]$log2ratio
+  tiles_with_CN_calls[[n]] = curr_sample
+}
+
+```
+
+```{r, fig.width=14, fig.height=20}
+RedBlackBlue = c("red","darkred","grey90","darkblue","blue")
+RedBlackBluePal = colorRampPalette(rev(RedBlackBlue))(100)
+
+tmp_chr = seqnames( tiles_with_CN_calls[[1]] )
+tmp_pos = start(tiles_with_CN_calls[[1]])
+tmp_id = paste(tmp_chr, tmp_pos, sep="_")
+
+row_anno = data.frame(chromosome=tmp_chr, row.names = tmp_id)
+
+cm = do.call(cbind, lapply(tiles_with_CN_calls, function(x) x$Log2Ratio))
+rownames(cm) = tmp_id
+
+new_breaks = c(-6,-0.6,seq(-0.5,0.5,1/96),0.6,6)
+labels = ed[colnames(cm),"Sample Description"]
+labels[is.na(labels)] = "UI mean raw logratio"
+gaps_row = which(ifelse(row_anno$chromosome != row_anno$chromosome[c(1,1:nrow(row_anno)-1)], T, F))
+pheatmap(cm, cluster_rows = F, cluster_cols = T, scale="none", breaks=new_breaks, color = RedBlackBluePal, annotation_row = row_anno, show_rownames = F, labels_col = labels, fontsize_col = 22, gaps_row = gaps_row)
+```
+
+```{r}
+pdf(file="CNV_heatmap_with_UI_log2_ratios_paired_recalled_CNV.pdf", width = 8, height=12, pointsize=3, onefile=FALSE)
+pheatmap(cm, cluster_rows = F, cluster_cols = T, scale="none", breaks=new_breaks, color = RedBlackBluePal, annotation_row = row_anno, show_rownames = F, labels_col = labels, fontsize_col = 22, gaps_row = gaps_row)
+dev.off()
+
+```
+
+# Genes in aberrant regions
+
+```{r}
+M17db = loadDb("/data_genome1/References/R_transformed/GENCODE_basic_M17_TxDB.db")
+tx_anno = fread("/data_genome1/References/MusMusculus/Annotation/GENCODE/M17/gencode.vM17.transcript.anno.txt", sep="\t", header=T, stringsAsFactors = F)
+setkey(tx_anno, transcript)
+
+# combine all samples
+all_long_CN_calls_dt = as.data.table(do.call(rbind, all_long_CN_calls))
+# exclude all segments with absolute log2ratio for the segment less than 0.3
+#all_long_CN_calls_dt = subset(all_long_CN_calls_dt, abs(seg.mean) > 0.3)
+all_long_CN_calls_dt = subset(all_long_CN_calls_dt, copy.number < 40)
+# classify segments in gain and loss 
+#all_long_CN_calls_dt$call = ifelse(all_long_CN_calls_dt$seg.mean> 0, "gain", "loss")
+all_long_CN_calls_dt$call  = all_long_CN_calls_dt$status
+# Note that the variant ID which we assign here is not guaranteed to be unique; CNVs in different samples can have the same ID
+#all_long_CN_calls_dt[, varID:= paste(chrom,":", loc.start,"_", loc.end, sep="") ]
+all_long_CN_calls_dt[, varID:= paste(chr,":", start,"_", end, sep="") ]
+setkey(all_long_CN_calls_dt, "varID")
+
+long_CN_ranges = with(all_long_CN_calls_dt, GRanges(gsub("chr","",chr), IRanges(start, end), sample=sample, call=call, ID=varID) )
+```
+
+```{r}
+tx_ranges = transcripts(M17db)
+# check overlap of CNV segments with transcripts
+ovlp = findOverlaps(long_CN_ranges,tx_ranges)
+
+tx_by_cnv = tapply(tx_ranges[subjectHits(ovlp)]$tx_name, long_CN_ranges[queryHits(ovlp)]$ID, list)
+tx_start_by_cnv = tapply(start(tx_ranges[subjectHits(ovlp)]), long_CN_ranges[queryHits(ovlp)]$ID, list)
+
+# Collect all transcripts, genes and their starts overlapped by each CNV
+all_long_CN_calls_dt[,tx_names := vector("list", nrow(all_long_CN_calls_dt))]
+all_long_CN_calls_dt[,tx_names:= tx_by_cnv[varID]]
+
+all_long_CN_calls_dt[,genes:= lapply(tx_names, function(x) tx_anno[x]$GeneSymbol)]
+all_long_CN_calls_dt[,tx_starts := vector("list", nrow(all_long_CN_calls_dt))]
+all_long_CN_calls_dt[,tx_starts:= tx_start_by_cnv[varID]]
+
+all_long_CN_calls_dt[, gene_start := mapply(function(s, g) {if(is.null(g) | is.null(s)) { NA; } else {tapply(s, g, min)}}, tx_starts, genes) ]
+all_long_CN_calls_dt[, genes_unique := lapply(genes, unique)  ]
+all_long_CN_calls_dt[, genes_unique_sorted := mapply(function(g, s) { if(is.null(g)) {NA} else {g[order(s[g])] }}, genes_unique, gene_start)  ]
+all_long_CN_calls_dt[, gene_starts_sorted := mapply(function(g, s) { if(is.null(g)) {NA} else { s[g] }}, genes_unique_sorted, gene_start)  ]
+
+gs_to_ensg = tx_anno[, .(ENSG=list(unique(gene))), by="GeneSymbol"]
+gs_to_ensg[,n:=elementNROWS(ENSG), by="GeneSymbol"]
+setkey(gs_to_ensg, "GeneSymbol")
+
+all_long_CN_calls_dt[, EnsemblGene := vector("list", nrow(all_long_CN_calls_dt))]
+# make sure that CNV with no genes return NA (and not NULL) and that for the rare genes which have more than one ENSGENE-ID we only return the first
+all_long_CN_calls_dt[, EnsemblGene := lapply(genes_unique_sorted, function(g) { ee = gs_to_ensg[g]; if(nrow(ee)==0) {NA} else {unlist(ee[, .(ENSG=unlist(ENSG)[1]), by="GeneSymbol"]$ENSG) }})]
+
+# Expand to tall-skinny format (i.e. melt list entries)
+gcounts = elementNROWS(all_long_CN_calls_dt$genes_unique_sorted)
+CN_calls_annotated = with(all_long_CN_calls_dt, data.table(sampleID=rep(sample, gcounts), varID=rep(varID, gcounts), chrom=rep(chr, gcounts), start=rep(start, gcounts), end=rep(end, gcounts), copy.number=rep(copy.number, gcounts), call=rep(call, gcounts), gene = unlist(genes_unique_sorted), gene_start=unlist(gene_starts_sorted), ensgene = unlist(EnsemblGene) ) )
+
+gene_tx_type = tx_anno[, .(TxType=paste(unique(TxType), collapse=",")), by=GeneSymbol]
+classify_TxType <- function(x) {
+  ifelse(grepl(",", x), ifelse(grepl("protein_coding", x), "protein_coding", "other"),
+               x)
+}
+gene_tx_type = gene_tx_type[, TxType_Short := classify_TxType(TxType)]
+setkey(gene_tx_type, GeneSymbol)
+
+CN_calls_annotated[, TxType:= gene_tx_type[gene]$TxType_Short]
+
+gene_by_sample_and_state = dcast.data.table(CN_calls_annotated, chrom+gene_start+gene+TxType ~ sampleID, value.var = "call", fun.aggregate = function(x) paste(x, collapse=","))
+```
+
+Genes in affected samples have been stored in the files: 
+
+*Long_CN_calls_all_samples_with_genes_recalled_CNV.txt*
+
+*Gene_status_by_sample_recalled_CNV.txt*
+
+```{r}
+# simplify table and convert lists to character string for export
+all_long_CN_calls_for_export = all_long_CN_calls_dt[,.(varID, chr, start, end,  copy.number, sample, call, genes = unlist(lapply(genes_unique_sorted, paste, collapse=",")) )]
+all_long_CN_calls_for_export = all_long_CN_calls_for_export[naturalorder(all_long_CN_calls_for_export$chr)]
+
+write.table(all_long_CN_calls_for_export, file="Long_CN_calls_paired_all_samples_with_genes_recalled_CNV.txt", sep="\t", row.names=F, quote=F)
+
+write.table(gene_by_sample_and_state, file="Gene_status_by_sample_paired_recalled_CNV.txt", sep="\t", row.names=F, quote=F)
+```
+
+```{r}
+save(all_long_CN_calls_dt, CN_calls_annotated, file="CN_calls_paired_recalled_CNV.Rdata" )
+```

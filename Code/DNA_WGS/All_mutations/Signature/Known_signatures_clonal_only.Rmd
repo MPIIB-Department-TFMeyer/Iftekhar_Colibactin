@@ -1,0 +1,212 @@
+---
+title: "Analysis of mutation patterns in Exome Data from MB208/Colibactin WGS in-vivo - signature analysis, only variants with AF > 0.25"
+author: "Hilmar Berger"
+output:
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+suppressMessages(library(GenomicRanges))
+suppressMessages(library(IRanges))
+suppressMessages(library(reshape2))
+suppressMessages(library(gplots))
+suppressMessages(library(pheatmap))
+suppressMessages(library(data.table))
+suppressMessages(library(GenomicFeatures))
+suppressMessages(library(ggbio))
+suppressMessages(library(xlsx))
+library(ggplot2)
+library(naturalsort)
+library(deconstructSigs)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(ggthemes)
+```
+
+# Data set 
+
+Somatic mutations from exome sequencing data of both mice analyzed in MB208 up to now are analyzed here. 
+
+```{r}
+load("../Colibactin_WGS_Strelka_Calls_reseq_2_3.Rdata")
+
+ed = read.xlsx("../../../metadata/SampleDescription_WGS.xls", sheetIndex = 1, stringsAsFactors=F)
+rownames(ed) = ed$SampleID
+#ed$MouseID = "M"
+ed$SampleDesc = paste(ed$MouseID, " ", ed$Name, sep="")
+ed = subset(ed, MouseID %in% c(1,2))
+
+mcols(all_variants) = merge(mcols(all_variants), ed, by.x="sampleID", by.y="SampleID", all.x=T, sort=F)
+all_variants$SampleDesc = paste("M",all_variants$MouseID, " ", all_variants$Name, sep="")
+all_variants$af = all_variants$AC / all_variants$DP
+
+sample_count = table(names(all_variants))
+all_variants$sample_count = integer(length(all_variants))
+all_variants$sample_count = sample_count[names(all_variants)]
+
+all_variants_filtered = all_variants[all_variants$vartype=="SNV" & all_variants$DP < 150 & all_variants$DP >= 10 & all_variants$AC >= 3 & all_variants$sample_count == 1 & !all_variants$multiallelic & all_variants$af >= 0.25 ]
+
+```
+
+## Mutations per sample
+
+```{r, fig.width=12}
+ggplot(as.data.frame(mcols(all_variants_filtered)), aes(x=SampleDesc, fill=Sample.Name)) + geom_bar(position="dodge") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+# Known signatures
+
+We use package deconstructSigs to estimate the contribution of the mutational signatures published by Alexandrov 2020 (COSMIC v3.1) in all samples.
+We add colon epithelium specific signatures from Lee-Six et al. 
+
+```{r}
+#new_sigs = read.csv(file="/data_genome2/public_data/Alexandrov_ICGC/v2018/sigProfiler_SBS_signatures_2018_03_28.csv")
+new_sigs = read.table(file="/data_genome2/public_data/Alexandrov_ICGC/COSMIC_v3.1/COSMIC_Mutational_Signatures_v3.1.csv", sep="\t", header=T, stringsAsFactors = F)
+new_sigs_fixed = as.data.frame(t(new_sigs[, 3:ncol(new_sigs)]))
+colnames(new_sigs_fixed) = apply(new_sigs[, 1:2], 1, function(x) {paste0(substr(x[2],1,1),"[", x[1],"]", substr(x[2],3,3))})
+
+new_sigs_mat = as.matrix(new_sigs_fixed)
+mode(new_sigs_mat) <- "numeric"
+new_sigs_mat[is.na(new_sigs_mat)] <- 0
+
+```
+
+
+```{r}
+lee_six_sigs = read.table("/data_genome1/public_data/Stratton_crypt_signatures/git/colon_microbiopsies/signature_extraction/subsitutions_hdp_signature_extraction/Signature_category_counts.txt", sep="\t", header=T)
+
+lee_six_mat = as.matrix(lee_six_sigs[, 2:ncol(lee_six_sigs)])
+tmp_c = as.character(lee_six_sigs$X)
+nuc_change = gsub("\\.",">", substr(tmp_c, 1, 3))
+trinuc_change = paste0(substr(tmp_c,8,8),"[",nuc_change,"]",substr(tmp_c,10,10))
+
+rownames(lee_six_mat) = trinuc_change
+
+lee_six_mat_new_sigs = lee_six_mat[, c(paste0("N",1:5))]
+
+alexandrov_and_lee_six_sigs = rbind(t(lee_six_mat_new_sigs), as.data.frame(new_sigs_mat)[,rownames(lee_six_mat_new_sigs)])
+
+```
+
+# Nucleotide changes
+
+```{r}
+standard_chroms = standardChromosomes(seqinfo(all_variants_filtered), species="Mus_musculus")
+
+#gr = all_variants_filtered
+gr = all_variants_filtered[seqnames(all_variants_filtered) %in% standard_chroms]
+
+mut_df <- data.frame(Sample = gr$Sample.Description.,
+  chr = paste("chr",gsub("MT","M",seqnames(gr)), sep=""),
+  pos = start(gr),
+  ref = gr$REF, 
+  alt = gr$alt_allele )
+
+#head(mut_df)
+sigs.input = mut.to.sigs.input(mut_df, sample.id = "Sample", chr="chr", pos="pos", ref="ref", alt="alt", bsg=BSgenome.Mmusculus.UCSC.mm10)
+```
+
+```{r}
+nuc_changes = apply(sigs.input, 1, function(x) tapply(x, factor(substr(colnames(sigs.input), 3,5)), sum))
+nuc_changes_ts = reshape2::melt(nuc_changes)
+colnames(nuc_changes_ts) = c("NucleotideChange", "Sample","Count")
+nuc_changes_ts$Condition = ed[nuc_changes_ts$Sample, "Condition"]
+
+ggplot(nuc_changes_ts, aes(x=Sample, y=Count, fill=NucleotideChange)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+ggplot(nuc_changes_ts, aes(x=Sample, y=Count, fill=NucleotideChange)) + geom_bar(position = "fill",stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + scale_y_continuous(labels = scales::percent)
+
+```
+
+
+
+```{r}
+all_sigs = list()
+for (n in sort(unique(mut_df$Sample)) ) {
+    sigs_found = whichSignatures(tumor.ref = sigs.input, 
+                           signatures.ref = alexandrov_and_lee_six_sigs, 
+                           sample.id = n, contexts.needed=TRUE, tri.counts.method = 'default')    
+    #plotSignatures(sigs_found, sub = "")
+    #makePie(sigs_found, sub="")
+    all_sigs[[n]] = sigs_found
+}
+```
+
+```{r, fig.width=16, fig.height = 8}
+signature_weight_mat = as.matrix(do.call(rbind, lapply(all_sigs, function(x) x$weights)))
+#col_anno = ed[,c("mol_class", "Helicobacter.pylori.infectionc", "Tumor.site", "Tumor.differentiation", "Lauren.s.type"), drop=F]
+pheatmap(t(signature_weight_mat), cluster_cols=F)
+```
+
+```{r, fig.width=12, fig.height=8}
+for (s in names(all_sigs)) {
+  tmp = all_sigs[[s]]
+  plotSignatures(tmp, sub="")
+  makePie(tmp, sub="")
+}
+```
+
+<!-- ```{r} -->
+<!-- par(mar=c(10,4,4,2)) -->
+<!-- barplot(sort(signature_weight_mat[,"Signature.17"], decreasing = T), main="Signature 17", ylab="Weight", xlab="patient", ylim=c(0,1), las=2) -->
+<!-- barplot(sort(signature_weight_mat[,"Signature.1"], decreasing = T), main="Signature 1", ylab="Weight", xlab="patient", ylim=c(0,1), las=2) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- plot(signature_weight_mat[,"Signature.17"], signature_weight_mat[,"Signature.1"], xlab="Proportion Sign. 17", ylab="Proportion Sign. 1") -->
+<!-- ``` -->
+
+```{r, fig.width=12}
+sigs.input_rel = sweep(sigs.input, 1, apply(sigs.input, 1, sum), "/")
+
+sigs.input_rel_diff = rbind(sigs.input_rel["WI_Clone1",]-sigs.input_rel["NI_Clone1",], sigs.input_rel["WI_Clone2",]-sigs.input_rel["NI_Clone2",])
+
+pheatmap(sigs.input_rel, cluster_cols = F)
+pheatmap(sigs.input_rel_diff, cluster_cols = F)
+```
+
+```{r, fig.width=14, fig.height=4}
+tmp = as.data.frame(sigs.input_rel)
+tmp$sample = rownames(tmp)
+sigs.input_rel_ts = as.data.frame(reshape2::melt(tmp))
+colnames(sigs.input_rel_ts) = c("sampleID", "nc","prop")
+sigs.input_rel_ts$group = substr(sigs.input_rel_ts$sampleID,1,8)
+sigs.input_rel_ts$replicate = substr(sigs.input_rel_ts$sampleID,9,9)
+
+#p = ggplot(sigs.input_rel_ts) + geom_col(aes(x=nc, fill=replicate, y = prop), position="dodge") + theme_few() + theme(axis.text.x = element_text(angle=90, hjust=1) ) + xlab("") + ylab("Proportion") + labs(fill="Sample") + facet_grid(group ~ .)
+#print(p)
+
+tmp = as.data.frame(sigs.input_rel_diff)
+tmp$sample = rownames(tmp)
+sigs.input_diff_ts = as.data.frame(reshape2::melt(tmp))
+colnames(sigs.input_diff_ts) = c("sampleID", "nc","prop")
+sigs.input_diff_ts$group = "Subtracted"
+sigs.input_diff_ts$replicate = substr(sigs.input_diff_ts$sampleID,9,9)
+
+sigs.input_combined_ts = rbind(sigs.input_rel_ts, sigs.input_diff_ts)
+sigs.input_combined_ts$group = factor(sigs.input_combined_ts$group, levels=c("WI_Clone","NI_Clone","Subtracted"))
+sigs.input_combined_ts$id_class_final = substr(as.character(sigs.input_combined_ts$nc), 3,5)
+sigs.input_combined_ts$id_class_steps = paste(substr(as.character(sigs.input_combined_ts$nc), 1,1),"_",substr(as.character(sigs.input_combined_ts$nc), 7,7))
+
+p = ggplot(sigs.input_combined_ts) + geom_col(aes(x=id_class_steps, fill=replicate, y = prop), position=position_dodge2()) + theme_few() + theme(panel.border = element_blank(), panel.spacing.x = unit(1,"points"), strip.background = element_rect(fill = "grey90"), axis.text.x = element_text(angle=90, hjust=1)) + xlab("") + ylab("Proportion") + labs(fill="Replicate") + facet_grid(group ~ id_class_final, scales = "free_x",space = "free_x") + scale_y_continuous(limits=c(0,1)) + coord_cartesian(ylim=c(0,0.06))
+
+print(p)
+```
+
+```{r}
+cairo_pdf("Trinucleotide_profiles_clonal_only.pdf", width=14, height=4)
+print(p  + theme(text=element_text(size=16), axis.text.x=element_text(size=10)) )
+dev.off()
+```
+

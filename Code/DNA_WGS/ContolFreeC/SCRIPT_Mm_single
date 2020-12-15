@@ -1,0 +1,20 @@
+R_EXE=/data_genome1/SharedSoftware/R/3.2/bin/R
+CONTROLFREEC_FOLDER=/data_genome1/SharedSoftware/ControlFreeC/v10.8
+
+BAM_FOLDER=../GATK_reseq_mouse_2_and_3
+
+SAMPLES="MOUlyuRAAAAAAA MOUlyuRAAABAAA MOUlyuRAAACAAA MOUlyuRAAADAAA MOUlyuRAAAEAAA MOUlyuRAAAFAAA"
+
+for s in $SAMPLES; do
+	target_BAM=$(ls ${BAM_FOLDER}/${s}_merged_dedup_realign.bam)
+	target_name=${s}_single
+
+	! [[ -e $target_name ]] && mkdir $target_name
+	cat ./template_single.conf |  sed -e 's|__TARGET__|'$target_BAM'|g' | sed -e 's|__OUTDIR__|'$target_name'|g' > ${target_name}.conf
+	$CONTROLFREEC_FOLDER/freec -conf ${target_name}.conf
+	prefix=${target_name}/$(basename $target_BAM)
+	cat $CONTROLFREEC_FOLDER/makeGraph.R | $R_EXE --slave --args 2 ${prefix}_ratio.txt
+	cat $CONTROLFREEC_FOLDER/assess_significance.R | $R_EXE --slave --args ${prefix}_CNVs ${prefix}_ratio.txt
+
+done
+

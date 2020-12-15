@@ -1,0 +1,11 @@
+DATA_FOLDER=../../mapping/reseq_mouse_2_and_3/BWA_MEM/
+
+SAMPLES=$(cut -f 1 ../../metadata/reseq_mouse_2_and_3/all_samples_aggregated_paired.txt)
+
+function run_gatk_pipeline { s=$1; bash ./DNASeq_calling_pipeline_single_sample_mouse.sh $DATA_FOLDER $s $REGIONS &> ${s}.log; }
+export -f run_gatk_pipeline
+export DATA_FOLDER
+export REGIONS
+
+echo $SAMPLES | sed -e 's/ /\n/g' | parallel --tmpdir ./tmp -t -j 3 run_gatk_pipeline
+
